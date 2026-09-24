@@ -1,0 +1,64 @@
+@import "tailwindcss";
+
+@theme {
+  --color-bg: #07090b;
+  --color-surface: #0e1316;
+  --color-surface-2: #141b1f;
+  --color-line: #263138;
+  --color-line-strong: #3a4a53;
+  --color-fg: #ffffff;
+  --color-muted: #aab7bd;
+  --color-placeholder: #82919a;
+  --color-accent: #2fe6d5;
+  --color-accent-ink: #032622;
+  --color-danger: #ff8a8a;
+
+  --font-sans:
+    var(--font-inter), var(--font-devanagari), ui-sans-serif, system-ui,
+    sans-serif;
+}
+
+:root {
+  color-scheme: dark;
+}
+
+html {
+  background: var(--color-bg);
+}
+
+body {
+  background: var(--color-bg);
+  color: var(--color-fg);
+  font-family: var(--font-sans);
+  font-size: 16px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Devanagari needs a little more line height than Latin to avoid clipping matras. */
+html[lang="hi"] body {
+  line-height: 1.65;
+}
+
+:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+
+/* The intro carousel scrolls horizontally; hide the bar, keep it scrollable. */
+.no-scrollbar {
+  scrollbar-width: none;
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

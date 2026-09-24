@@ -1,0 +1,10 @@
+node_modules/
+.env
+.env.local
+.env.*.local
+dist/
+*.log
+
+.next/
+next-env.d.ts
+.SKILL.md
