@@ -14,7 +14,7 @@ export default function LanguagePage() {
 
   // Already signed in: this screen is only for first-time setup.
   useEffect(() => {
-    if (isAuthenticated) router.replace("/goal");
+    if (isAuthenticated) router.replace("/start");
   }, [isAuthenticated, router]);
 
   return (

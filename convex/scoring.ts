@@ -597,11 +597,16 @@ export const scoreLevelCheck = internalAction({
         totalCount,
       });
 
-      // The plan is generated exactly once, right after scoring succeeds.
-      await ctx.scheduler.runAfter(0, internal.plans.generatePlanForGoal, {
-        goalId: input.goalId,
-        userId: args.userId,
-      });
+      if (input.goalType === "partner_test") {
+        // A partner's speaking test approves/rejects them; it needs no learning plan.
+        await ctx.runMutation(internal.partners.applyTestResult, { goalId: input.goalId, level });
+      } else {
+        // The plan is generated exactly once, right after scoring succeeds.
+        await ctx.scheduler.runAfter(0, internal.plans.generatePlanForGoal, {
+          goalId: input.goalId,
+          userId: args.userId,
+        });
+      }
     } catch (error) {
       const message =
         error instanceof Error ? `${error.name}: ${error.message}` : String(error);

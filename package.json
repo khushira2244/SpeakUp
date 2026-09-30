@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "SpeakUp by AdaptiveSkills — backend-only Convex application",
+  "description": "SpeakUp by AdaptiveSkills — adaptive spoken-language learning",
   "scripts": {
     "dev": "convex dev",
     "dev:once": "convex dev --once",
@@ -15,12 +15,15 @@
     "test-stream": "tsx scripts/test-stream.ts",
     "dev:web": "next dev",
     "build:web": "next build",
-    "start:web": "next start"
+    "start:web": "next start",
+    "dev:web:https": "next dev --experimental-https"
   },
   "dependencies": {
     "@auth/core": "0.37.0",
     "@convex-dev/auth": "^0.0.90",
     "convex": "^1.28.0",
+    "livekit-client": "^2.22.3",
+    "livekit-server-sdk": "^2.19.1",
     "next": "^16.3.6",
     "react": "^19.3.0",
     "react-dom": "^19.3.0"

@@ -9,7 +9,7 @@ import {
 } from "react";
 import { useI18n } from "@/i18n/provider";
 
-function cx(...parts: Array<string | false | null | undefined>): string {
+export function cx(...parts: Array<string | false | null | undefined>): string {
   return parts.filter(Boolean).join(" ");
 }
 
@@ -22,7 +22,7 @@ export function Screen({ children }: { children: ReactNode }) {
   );
 }
 
-export function BrandHeader() {
+export function BrandHeader({ tagline = true }: { tagline?: boolean }) {
   const { t } = useI18n();
   return (
     <header className="text-center">
@@ -31,7 +31,7 @@ export function BrandHeader() {
         <span>Up</span>
       </h1>
       <p className="text-[13px] leading-tight text-muted">{t("brand.by")}</p>
-      <p className="mt-2 text-base text-muted">{t("brand.tagline")}</p>
+      {tagline ? <p className="mt-2 text-base text-muted">{t("brand.tagline")}</p> : null}
     </header>
   );
 }
@@ -119,7 +119,7 @@ export function ChoiceRow({
     <label
       lang={lang}
       className={cx(
-        "flex min-h-14 cursor-pointer items-center justify-between rounded-2xl border px-4 py-3 text-[17px] transition-colors",
+        "flex min-h-14 cursor-pointer items-center justify-between rounded-2xl border px-4 py-3 text-[17px] select-none transition-colors",
         "has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-offset-2 has-[:focus-visible]:outline-accent",
         checked
           ? "border-accent bg-accent/10 shadow-[0_0_0_1px_var(--color-accent)]"
@@ -165,7 +165,7 @@ export function ChoicePill({
   return (
     <label
       className={cx(
-        "flex min-h-12 cursor-pointer items-center rounded-full border px-4 text-base transition-colors",
+        "flex min-h-12 cursor-pointer items-center rounded-full border px-4 text-base select-none transition-colors",
         "has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-offset-2 has-[:focus-visible]:outline-accent",
         checked
           ? "border-accent bg-accent/15 text-fg"

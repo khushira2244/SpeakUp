@@ -12,6 +12,7 @@ import {
 import {
   DEFAULT_LANG,
   DICTIONARIES,
+  LANG_COOKIE,
   isSupportedLang,
   type LangCode,
   type MessageKey,
@@ -19,28 +20,46 @@ import {
 
 const STORAGE_KEY = "speakup.lang";
 const CHANGE_EVENT = "speakup:lang-change";
+const ONE_YEAR_SECONDS = 60 * 60 * 24 * 365;
 
-// localStorage can throw (private mode, blocked site data) — never let that
-// break rendering; fall back to the default language.
-function readStoredLang(): LangCode {
+// The cookie is what the SERVER reads to render the first paint in the right
+// language; localStorage is kept as a fallback (older visits) and both are
+// tried defensively — private mode or blocked storage must never break rendering.
+function readCookieLang(): LangCode | null {
+  try {
+    for (const part of document.cookie.split("; ")) {
+      const [name, value] = part.split("=");
+      if (name === LANG_COOKIE && isSupportedLang(value)) return value;
+    }
+  } catch {
+    // cookies unavailable
+  }
+  return null;
+}
+
+function readStoredLang(): LangCode | null {
   try {
     const stored = window.localStorage.getItem(STORAGE_KEY);
-    return isSupportedLang(stored) ? stored : DEFAULT_LANG;
+    return isSupportedLang(stored) ? stored : null;
   } catch {
-    return DEFAULT_LANG;
+    return null;
+  }
+}
+
+function writeCookie(code: LangCode): void {
+  try {
+    document.cookie = `${LANG_COOKIE}=${code}; path=/; max-age=${ONE_YEAR_SECONDS}; SameSite=Lax`;
+  } catch {
+    // cookies unavailable
   }
 }
 
 // In-memory fallback so the choice still applies for this session even when
-// localStorage is unavailable.
+// cookies and localStorage are both unavailable.
 let memoryLang: LangCode | null = null;
 
 function getSnapshot(): LangCode {
-  return memoryLang ?? readStoredLang();
-}
-
-function getServerSnapshot(): LangCode {
-  return DEFAULT_LANG;
+  return memoryLang ?? readCookieLang() ?? readStoredLang() ?? DEFAULT_LANG;
 }
 
 function subscribe(onChange: () => void): () => void {
@@ -62,21 +81,36 @@ type I18nValue = {
 
 const I18nContext = createContext<I18nValue | null>(null);
 
-export function I18nProvider({ children }: { children: ReactNode }) {
+/**
+ * `initialLang` is what the server rendered (read from the language cookie),
+ * so hydration starts from the same language and nothing flashes.
+ */
+export function I18nProvider({
+  children,
+  initialLang,
+}: {
+  children: ReactNode;
+  initialLang: LangCode;
+}) {
+  const getServerSnapshot = useCallback(() => initialLang, [initialLang]);
   const lang = useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot);
 
   const setLang = useCallback((code: LangCode) => {
     memoryLang = code;
+    writeCookie(code);
     try {
       window.localStorage.setItem(STORAGE_KEY, code);
     } catch {
-      // ignored: memoryLang keeps the choice for this session
+      // ignored: the cookie / memoryLang keep the choice
     }
     window.dispatchEvent(new Event(CHANGE_EVENT));
   }, []);
 
   useEffect(() => {
     document.documentElement.lang = lang;
+    // Older visits only stored the language in localStorage: give the server a
+    // cookie from now on so the next load is already correct.
+    if (readCookieLang() !== lang) writeCookie(lang);
   }, [lang]);
 
   const value = useMemo<I18nValue>(() => {

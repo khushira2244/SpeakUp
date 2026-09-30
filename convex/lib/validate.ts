@@ -112,6 +112,19 @@ export const HINT_BACKFILL_JSON_SCHEMA: Record<string, unknown> = {
   additionalProperties: false,
 };
 
+/** Dictionary lookup. All fields are required by strict mode; they are empty when isWord is false. */
+export const DICTIONARY_JSON_SCHEMA: Record<string, unknown> = {
+  type: "object",
+  properties: {
+    isWord: { type: "boolean" },
+    word: { type: "string" },
+    meaning: { type: "string" },
+    pronunciationHint: { type: "string" },
+  },
+  required: ["isWord", "word", "meaning", "pronunciationHint"],
+  additionalProperties: false,
+};
+
 export const GRAMMAR_FEEDBACK_JSON_SCHEMA: Record<string, unknown> = {
   type: "object",
   properties: {
@@ -133,38 +146,41 @@ export const GRAMMAR_FEEDBACK_JSON_SCHEMA: Record<string, unknown> = {
   additionalProperties: false,
 };
 
-export const PLAN_JSON_SCHEMA: Record<string, unknown> = {
-  type: "object",
-  properties: {
-    days: {
-      type: "array",
-      items: {
-        type: "object",
-        properties: {
-          title: { type: "string" },
-          words: {
-            type: "array",
-            items: {
-              type: "object",
-              properties: {
-                word: { type: "string" },
-                meaning: { type: "string" },
-              },
-              required: ["word", "meaning"],
-              additionalProperties: false,
-            },
+/**
+ * Words and patterns are referred to only by ID (never by copying the word or
+ * pattern text): `enum` on a strict json_schema field means the gateway
+ * itself rejects any value outside the supplied list, so the model cannot
+ * return a near-miss like "Ich lerne Deutsch." for the pattern
+ * "Ich lerne ___." the way a copy-the-string-exactly instruction allowed.
+ * `validatePlanDays` below still re-checks membership itself as a second,
+ * server-side line of defence.
+ */
+export function planJsonSchema(
+  wordIds: readonly string[],
+  patternIds: readonly string[],
+): Record<string, unknown> {
+  return {
+    type: "object",
+    properties: {
+      days: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            title: { type: "string" },
+            words: { type: "array", items: { type: "string", enum: [...wordIds] } },
+            patterns: { type: "array", items: { type: "string", enum: [...patternIds] } },
+            practiceSummary: { type: "string" },
           },
-          patterns: { type: "array", items: { type: "string" } },
-          practiceSummary: { type: "string" },
+          required: ["title", "words", "patterns", "practiceSummary"],
+          additionalProperties: false,
         },
-        required: ["title", "words", "patterns", "practiceSummary"],
-        additionalProperties: false,
       },
     },
-  },
-  required: ["days"],
-  additionalProperties: false,
-};
+    required: ["days"],
+    additionalProperties: false,
+  };
+}
 
 const MAX_TEXT = 2000;
 
@@ -402,6 +418,48 @@ export function validateGoalTargets(
 }
 
 // ---------------------------------------------------------------------------
+// Dictionary lookup (dictionary.lookup)
+// ---------------------------------------------------------------------------
+
+/** Sized to fit a savedWords row, so a looked-up word can always be saved. */
+export const DICTIONARY_LIMITS = { word: 60, meaning: 200, hint: 120 } as const;
+
+export type ValidatedDictionaryEntry =
+  | { isWord: false }
+  | { isWord: true; word: string; meaning: string; pronunciationHint: string };
+
+/**
+ * `isWord: false` is a valid answer (the input is not a real target-language
+ * word) and needs no other field. Otherwise: a Latin-script canonical word
+ * (en and de are both Latin), a meaning, and a hint that passes the same
+ * script rules as generated vocabulary.
+ */
+export function validateDictionaryEntry(
+  raw: unknown,
+  opts: { primaryLanguage: KnownLanguage },
+): ValidatedDictionaryEntry {
+  const root = asRecord(raw, "dictionary");
+  if (typeof root.isWord !== "boolean") fail("dictionary.isWord", "expected a boolean");
+  if (!root.isWord) return { isWord: false };
+
+  const word = asNonEmptyString(root.word, "dictionary.word", DICTIONARY_LIMITS.word);
+  if (!isWrittenInScript(word, "Latin")) {
+    fail("dictionary.word", `"${word}" is not in the target language's (Latin) script`);
+  }
+  const meaning = asNonEmptyString(root.meaning, "dictionary.meaning", DICTIONARY_LIMITS.meaning);
+  const pronunciationHint = validatePronunciationHint(
+    root.pronunciationHint,
+    word,
+    opts.primaryLanguage,
+    "dictionary.pronunciationHint",
+  );
+  if (pronunciationHint.length > DICTIONARY_LIMITS.hint) {
+    fail("dictionary.pronunciationHint", `expected at most ${DICTIONARY_LIMITS.hint} characters`);
+  }
+  return { isWord: true, word, meaning, pronunciationHint };
+}
+
+// ---------------------------------------------------------------------------
 // Pronunciation-hint backfill (migrations.backfillPronunciationHints)
 // ---------------------------------------------------------------------------
 
@@ -522,10 +580,12 @@ export type ValidatedPlanDay = {
   dayNo: number;
   title: string;
   /**
-   * `pronunciationHint` is never requested from the LLM for plans; it is
-   * copied from goalTargets by word during deterministic reconciliation.
+   * IDs, not word/pattern text (see `planJsonSchema`). The caller
+   * (`plans.reconcilePlanDays`) maps each ID back to the full, server-owned
+   * word/pattern object; a plan word's meaning and pronunciation hint always
+   * come from goalTargets, never from this LLM call.
    */
-  words: Array<{ word: string; meaning: string; pronunciationHint?: string }>;
+  words: string[];
   patterns: string[];
   practiceSummary: string;
 };
@@ -540,7 +600,13 @@ export function wordsPerDayFor(minutesPerDay: number): number {
 
 export function validatePlanDays(
   raw: unknown,
-  opts: { mode: PlanMode; minutesPerDay: number },
+  opts: {
+    mode: PlanMode;
+    minutesPerDay: number;
+    /** The exact word/pattern IDs offered in the prompt for this call. */
+    wordIds: ReadonlySet<string>;
+    patternIds: ReadonlySet<string>;
+  },
 ): ValidatedPlanDay[] {
   const root = asRecord(raw, "plan");
 
@@ -561,19 +627,25 @@ export function validatePlanDays(
         pickArray(obj, ["words", "vocabulary"], `${path}.words`),
         `${path}.words`,
         { min: expectedWordCount, max: expectedWordCount },
-        (rawWord, wordPath) => {
-          const wordObj = asRecord(rawWord, wordPath);
-          return {
-            word: asNonEmptyString(wordObj.word, `${wordPath}.word`, 120),
-            meaning: asNonEmptyString(wordObj.meaning, `${wordPath}.meaning`, 300),
-          };
+        (rawId, wordPath) => {
+          const id = asNonEmptyString(rawId, wordPath, 20);
+          if (!opts.wordIds.has(id)) {
+            fail(wordPath, `"${id}" is not one of the allowed word IDs for this goal`);
+          }
+          return id;
         },
       );
       const patterns = asArrayOf(
         pickArray(obj, ["patterns", "grammar"], `${path}.patterns`),
         `${path}.patterns`,
         { min: expectedPatternCount, max: expectedPatternCount },
-        (rawPattern, patternPath) => asNonEmptyString(rawPattern, patternPath, 300),
+        (rawId, patternPath) => {
+          const id = asNonEmptyString(rawId, patternPath, 20);
+          if (!opts.patternIds.has(id)) {
+            fail(patternPath, `"${id}" is not one of the allowed pattern IDs for this goal`);
+          }
+          return id;
+        },
       );
       return {
         // dayNo is assigned deterministically below, never taken from the model.

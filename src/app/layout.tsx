@@ -1,7 +1,9 @@
 import type { Metadata, Viewport } from "next";
+import { cookies } from "next/headers";
 import { Inter, Noto_Sans_Devanagari } from "next/font/google";
 import type { ReactNode } from "react";
 import { Providers } from "@/components/providers";
+import { DEFAULT_LANG, LANG_COOKIE, isSupportedLang } from "@/i18n/messages";
 import "./globals.css";
 
 const inter = Inter({
@@ -27,11 +29,16 @@ export const viewport: Viewport = {
   themeColor: "#07090b",
 };
 
-export default function RootLayout({ children }: { children: ReactNode }) {
+export default async function RootLayout({ children }: { children: ReactNode }) {
+  // Read the saved language on the server so the very first paint is already
+  // in it: a Hindi user never sees English flash before hydration.
+  const saved = (await cookies()).get(LANG_COOKIE)?.value;
+  const lang = isSupportedLang(saved) ? saved : DEFAULT_LANG;
+
   return (
-    <html lang="en" className={`${inter.variable} ${devanagari.variable}`}>
+    <html lang={lang} className={`${inter.variable} ${devanagari.variable}`}>
       <body>
-        <Providers>{children}</Providers>
+        <Providers initialLang={lang}>{children}</Providers>
       </body>
     </html>
   );

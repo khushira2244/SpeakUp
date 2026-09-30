@@ -22,12 +22,15 @@ import {
   attemptKindValidator,
   attemptSourceValidator,
   levelCheckPromptValidator,
+  levelCheckStatusValidator,
   transcriptWordValidator,
 } from "./schema";
 import {
   invalid,
   loadActiveGoal,
+  loadLearnerLanguages,
   notFound,
+  requireOwnedGoal,
   requireOwnedLevelCheck,
   requireUser,
   requireUserId,
@@ -37,13 +40,7 @@ import {
   transcribeRecordedAudio,
   type TranscriptWord,
 } from "./lib/assemblyai";
-import {
-  generationLanguages,
-  readLanguageProfile,
-  streamRouteFor,
-  type KnownLanguage,
-  type TargetLanguage,
-} from "./lib/languages";
+import { streamRouteFor } from "./lib/languages";
 import { LEVEL_CHECK_PROMPT_COUNT, LEVEL_CHECK_WORD_COUNT } from "./lib/validate";
 
 const MAX_TRANSCRIPT_CHARS = 4000;
@@ -60,13 +57,23 @@ const startLevelCheckResult = v.object({
   prompts: v.array(levelCheckPromptValidator),
 });
 
-/** Begins a level check against the caller's active goal. */
+/**
+ * Begins a level check against the caller's active goal, or — when `goalId`
+ * is given — that specific owned goal instead (the seam for a partner's
+ * speaking test, which runs against its own `goalType: "partner_test"` goal
+ * rather than whatever the caller is personally learning; see
+ * convex/partners.ts). Omitting `goalId` is the ordinary learner path,
+ * unchanged.
+ */
 export const startLevelCheck = mutation({
-  args: {},
+  args: { goalId: v.optional(v.id("goals")) },
   returns: startLevelCheckResult,
-  handler: async (ctx) => {
+  handler: async (ctx, args) => {
     const userId = await requireUserId(ctx);
-    const goal = await loadActiveGoal(ctx, userId);
+    const goal =
+      args.goalId !== undefined
+        ? await requireOwnedGoal(ctx, args.goalId, userId)
+        : await loadActiveGoal(ctx, userId);
     if (goal === null) {
       invalid("You have no active goal. Call goals.setGoal first.");
     }
@@ -94,6 +101,28 @@ export const startLevelCheck = mutation({
       words: targets.levelCheckWords,
       prompts: targets.levelCheckPrompts,
     };
+  },
+});
+
+/**
+ * The most recent levelCheck against an owned goal, or `null` if none has
+ * been started yet. Lets a client resume (or show the result of) a check
+ * against a non-active goal — a partner's test — without needing its own
+ * levelCheckId already in hand (the ordinary learner flow gets this from
+ * home.progressCounts instead).
+ */
+export const latestForGoal = query({
+  args: { goalId: v.id("goals") },
+  returns: v.union(v.object({ levelCheckId: v.id("levelChecks"), status: levelCheckStatusValidator }), v.null()),
+  handler: async (ctx, args) => {
+    const userId = await requireUserId(ctx);
+    await requireOwnedGoal(ctx, args.goalId, userId);
+    const latest = await ctx.db
+      .query("levelChecks")
+      .withIndex("by_goal", (q) => q.eq("goalId", args.goalId))
+      .order("desc")
+      .first();
+    return latest === null ? null : { levelCheckId: latest._id, status: latest.status };
   },
 });
 
@@ -149,7 +178,11 @@ const streamLanguageValidator = v.union(
  * relies on the detected language to tell off-target answers apart.
  */
 export const getStreamConfig = query({
-  args: { purpose: v.union(v.literal("target"), v.literal("own")) },
+  args: {
+    purpose: v.union(v.literal("target"), v.literal("own")),
+    /** Stream for a specific owned goal (a partner's test) instead of the caller's active goal. */
+    goalId: v.optional(v.id("goals")),
+  },
   returns: v.object({
     purpose: v.union(v.literal("target"), v.literal("own")),
     /** The language the learner is expected to speak on this stream. */
@@ -165,30 +198,8 @@ export const getStreamConfig = query({
   }),
   handler: async (ctx, args) => {
     const user = await requireUser(ctx);
-    const profile = readLanguageProfile(user);
-
-    let languages: { targetLanguage: TargetLanguage; primaryLanguage: KnownLanguage } | null =
-      profile === null
-        ? null
-        : { targetLanguage: profile.targetLanguage, primaryLanguage: profile.primaryLanguage };
-    let languageSource: "goal" | "profile" = "profile";
-
-    const goal = await loadActiveGoal(ctx, user._id);
-    if (goal !== null) {
-      const targets = await ctx.db
-        .query("goalTargets")
-        .withIndex("by_goal", (q) => q.eq("goalId", goal._id))
-        .first();
-      if (targets !== null) {
-        const generated = generationLanguages(targets, profile);
-        languages = {
-          targetLanguage: generated.targetLanguage,
-          primaryLanguage: generated.primaryLanguage,
-        };
-        languageSource = "goal";
-      }
-    }
-
+    const goalOverride = args.goalId !== undefined ? await requireOwnedGoal(ctx, args.goalId, user._id) : undefined;
+    const languages = await loadLearnerLanguages(ctx, user, goalOverride);
     if (languages === null) {
       invalid("Choose your languages first: call users.updateProfile before streaming.");
     }
@@ -202,7 +213,7 @@ export const getStreamConfig = query({
         speech_model: route.speechModel,
         language_detection: "true" as const,
       },
-      languageSource,
+      languageSource: languages.source,
     };
   },
 });

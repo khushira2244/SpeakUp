@@ -31,6 +31,7 @@ import { fileURLToPath } from "node:url";
 import { ConvexHttpClient } from "convex/browser";
 import { api } from "../convex/_generated/api";
 import type { Id } from "../convex/_generated/dataModel";
+import { TokenVerifier } from "livekit-server-sdk";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const CONVEX_CLI = path.join(ROOT, "node_modules", "convex", "bin", "main.js");
@@ -179,6 +180,21 @@ function preflight(): void {
   info(
     `endpoint: ${names.has("LLM_BASE_URL") ? "LLM_BASE_URL override set" : "default AssemblyAI LLM Gateway"}`,
   );
+
+  // LiveKit powers the live-room section (8c) — joinRoom mints real access tokens.
+  const missingLiveKit = ["LIVEKIT_URL", "LIVEKIT_API_KEY", "LIVEKIT_API_SECRET"].filter((n) => !names.has(n));
+  if (missingLiveKit.length > 0) {
+    console.error(
+      `\n✗ MISSING DEPENDENCY — the live-room section (8c) cannot mint LiveKit tokens without it.\n` +
+        `  Not set on the Convex deployment: ${missingLiveKit.join(", ")}\n\n` +
+        `  Set them with:\n` +
+        `    npx convex env set LIVEKIT_URL <your-livekit-url>\n` +
+        `    npx convex env set LIVEKIT_API_KEY <your-api-key>\n` +
+        `    npx convex env set LIVEKIT_API_SECRET <your-api-secret>\n`,
+    );
+    process.exit(2);
+  }
+  record("LIVEKIT_URL / LIVEKIT_API_KEY / LIVEKIT_API_SECRET set on deployment", true, "mints real room-join tokens");
   info(
     `mode: ${FRESH ? "--fresh (wipe and regenerate)" : "idempotent (reuse existing state)"}`,
   );
@@ -663,6 +679,68 @@ async function main(): Promise<void> {
       : "null",
   );
 
+  // --- 7b. Access pass + Home tabs (no LLM) --------------------------------
+  step("7b. Access pass + Words / Units tabs");
+  const pass = await client.query(api.passes.activePass, {});
+  if (pass === null || !pass.isActive) {
+    await client.mutation(api.passes.startDemoPass, { passId: "month" });
+    info("no active pass — started a demo month pass (needs ALLOW_DEMO_PASSES=true)");
+  } else {
+    info(`reusing active ${pass.passId} pass (${pass.source}) until ${new Date(pass.endsAt).toISOString()}`);
+  }
+  const wordsTab = await client.query(api.home.words, {});
+  record(
+    "home.words statuses match the latest level result",
+    wordsTab !== null &&
+      wordsTab.level === result.level &&
+      wordsTab.counts.canUse === result.canUse.length &&
+      wordsTab.counts.practising === result.practising.length &&
+      wordsTab.counts.notYet === result.notYet.length &&
+      wordsTab.counts.total === targets.words.length &&
+      wordsTab.words.every((w) => w.pronunciationHint !== null),
+    wordsTab
+      ? `level=${wordsTab.level} canUse=${wordsTab.counts.canUse} practising=${wordsTab.counts.practising} notYet=${wordsTab.counts.notYet}`
+      : "null",
+  );
+  const unitsTab = await client.query(api.home.units, {});
+  record(
+    "home.units returns concepts and the whole plan",
+    unitsTab !== null &&
+      unitsTab.concepts.length === targets.patterns.length &&
+      unitsTab.plan !== null &&
+      unitsTab.plan.days.length === EXPECTED_DAY_COUNT &&
+      unitsTab.plan.currentDay >= 1 &&
+      unitsTab.plan.currentDay <= EXPECTED_DAY_COUNT &&
+      unitsTab.plan.days.every((d) => d.practiceSummary.length > 0),
+    unitsTab?.plan ? `mode=${unitsTab.plan.mode} currentDay=${unitsTab.plan.currentDay}/${unitsTab.plan.days.length}` : "null",
+  );
+
+  // --- 7c. Lab (day 1) — built for "starting"/"basic" only, generate only if missing ----
+  step("7c. Day 1 lab (starting/basic only)");
+  if (result.level === "intermediate" || result.level === "confident") {
+    info(`level is "${result.level}" — labs are not built for this level yet, skipping`);
+  } else {
+    const existingLab = await client.query(api.labs.lab, { goalId, dayNo: 1 });
+    if (existingLab === null || existingLab.generation !== "ready") {
+      await client.action(api.labs.generateLabForDay, { goalId, dayNo: 1 });
+      created.push("day 1 lab");
+    } else {
+      reused.push("day 1 lab");
+    }
+    const lab = await client.query(api.labs.lab, { goalId, dayNo: 1 });
+    const day1WordCount = plan.days[0]?.words.length ?? 0;
+    record(
+      "labs.lab: generated once, shaped by minutesPerDay, no answer key leaked",
+      lab !== null &&
+        lab.generation === "ready" &&
+        lab.story.length === day1WordCount &&
+        lab.grammar.length > 0 &&
+        lab.grammar.every((g) => g.sentence.includes("___") && !("correctIndex" in g)) &&
+        lab.story.every((s) => s.sentence.includes("___") && s.options.includes(s.word)),
+      lab ? `grammar=${lab.grammar.length} story=${lab.story.length} outcome=${lab.outcome}` : "null",
+    );
+  }
+
   // --- 8. Ownership isolation (second fixed account) ------------------------
   step("8. Another signed-in user cannot touch these records");
   const other = new ConvexHttpClient(convexUrl);
@@ -697,6 +775,328 @@ async function main(): Promise<void> {
     levelBlocked = true;
   }
   record("scoring.levelResult rejects another user's levelCheckId", levelBlocked);
+
+  // --- 8b. Rooms: partner application, availability, and booking ------------
+  step("8b. Rooms: partner application, availability, and booking");
+  const PARTNER_EMAIL = "partner@speakup.dev";
+  const PARTNER_PASSWORD = "speakup-dev-fixed-password-partner";
+  // Matches test@'s active goal's target language, so the two can be paired.
+  const ROOMS_TARGET_LANGUAGE = "en" as const;
+
+  const partnerClient = new ConvexHttpClient(convexUrl);
+  const partnerAuthResult = await authenticate(partnerClient, PARTNER_EMAIL, PARTNER_PASSWORD);
+  partnerClient.setAuth(partnerAuthResult.token);
+  record(
+    "partner account available",
+    true,
+    `${PARTNER_EMAIL} (${partnerAuthResult.createdAccount ? "account created" : "existing account reused"})`,
+  );
+  (partnerAuthResult.createdAccount ? created : reused).push("partner account");
+
+  // The partner's own language profile (unrelated to which language they teach) must exist before applyAsPartner.
+  const partnerProfile = await partnerClient.query(api.users.me, {});
+  const partnerProfileMatches =
+    partnerProfile?.knownLanguages?.includes("en") === true &&
+    partnerProfile.primaryLanguage === "en" &&
+    partnerProfile.targetLanguage === "de";
+  if (partnerProfileMatches) {
+    reused.push("partner language profile");
+  } else {
+    await partnerClient.mutation(api.users.updateProfile, {
+      knownLanguages: ["en"],
+      primaryLanguage: "en",
+      targetLanguage: "de",
+      gender: "female",
+    });
+    created.push("partner language profile");
+  }
+
+  // Application + real speaking test (reuses the level-check flow against the partner_test goal).
+  const partnerProfilesBefore = await partnerClient.query(api.partners.myPartnerProfiles, {});
+  let approvedProfile = partnerProfilesBefore.find(
+    (p) => p.targetLanguage === ROOMS_TARGET_LANGUAGE && p.status === "approved",
+  );
+
+  if (approvedProfile !== undefined) {
+    reused.push("partner profile (approved)");
+    record("partner already approved", true, `level=${approvedProfile.level}`);
+  } else {
+    const applied = await partnerClient.mutation(api.partners.applyAsPartner, {
+      targetLanguage: ROOMS_TARGET_LANGUAGE,
+    });
+    created.push("partner application + test goal");
+    record("partners.applyAsPartner created/reused a pending application", true, applied.partnerProfileId);
+
+    // goalTargets generate asynchronously — retry startLevelCheck until they're ready.
+    const started = await pollUntil("partner test goal targets", 180_000, 2_000, async () => {
+      try {
+        return await partnerClient.mutation(api.levelCheck.startLevelCheck, { goalId: applied.testGoalId });
+      } catch {
+        return null;
+      }
+    });
+    record(
+      "partner speaking test started (5 words + 2 prompts)",
+      started.words.length === 5 && started.prompts.length === 2,
+      started.levelCheckId,
+    );
+
+    // The full goal vocabulary (dev-only introspection — no public API exposes a non-active goal's word list).
+    const vocab = JSON.parse(
+      runConvexCli(["run", "dev:goalVocabulary", JSON.stringify({ goalId: applied.testGoalId })]),
+    ) as { words: string[] };
+    if (vocab.words.length === 0) fatal("Partner test goal has no vocabulary — goalTargets generation may have failed");
+
+    for (let i = 0; i < started.words.length; i++) {
+      const expected = started.words[i]!;
+      await partnerClient.mutation(api.levelCheck.saveAttempt, {
+        levelCheckId: started.levelCheckId,
+        kind: "word",
+        index: i,
+        expected,
+        transcript: expected,
+        words: fakeWordsFor(expected, 0.97),
+        source: "streaming",
+      });
+    }
+    record("saved 5 partner word attempts (all clear)", true);
+
+    // Both prompt answers together cover the ENTIRE goal vocabulary, so the partner scores
+    // confidently above the approval bar (>= "intermediate") regardless of exact word counts.
+    const half = Math.ceil(vocab.words.length / 2);
+    const partnerAnswers = [vocab.words.slice(0, half).join(" and "), vocab.words.slice(half).join(" and ")];
+    for (let i = 0; i < started.prompts.length; i++) {
+      const transcript = partnerAnswers[i] || vocab.words.join(" and ");
+      await partnerClient.mutation(api.levelCheck.saveAttempt, {
+        levelCheckId: started.levelCheckId,
+        kind: "prompt",
+        index: i,
+        expected: started.prompts[i]!.english,
+        transcript,
+        words: fakeWordsFor(transcript, 0.95),
+        source: "streaming",
+        languageDetected: "en",
+      });
+    }
+    record(
+      "saved 2 partner prompt attempts covering the full vocabulary",
+      true,
+      `${vocab.words.length} words`,
+    );
+
+    await partnerClient.mutation(api.levelCheck.finishLevelCheck, { levelCheckId: started.levelCheckId });
+
+    const partnerScored = await pollUntil("partner scoring to finish", 180_000, 2_000, async () => {
+      const r = await partnerClient.query(api.scoring.levelResult, { levelCheckId: started.levelCheckId });
+      return r.status === "done" || r.status === "failed" ? r : null;
+    });
+    if (partnerScored.status === "failed") {
+      fatal(`Partner scoring failed: ${partnerScored.error}`);
+    }
+    record("partner speaking test scored", true, `level=${partnerScored.result?.level}`);
+
+    const polledApproval = await pollUntil("partner profile approval", 60_000, 1_500, async () => {
+      const profiles = await partnerClient.query(api.partners.myPartnerProfiles, {});
+      const p = profiles.find((pp) => pp.targetLanguage === ROOMS_TARGET_LANGUAGE);
+      return p !== undefined && p.status !== "pending" ? p : null;
+    });
+    record(
+      "partner approved (level >= intermediate)",
+      polledApproval.status === "approved",
+      `status=${polledApproval.status} level=${polledApproval.level}`,
+    );
+    if (polledApproval.status !== "approved") fatal("Partner was not approved — cannot continue the rooms flow");
+    approvedProfile = polledApproval;
+  }
+
+  // Weekly availability: every day, all day, so a bookable slot exists on every run regardless of today's weekday.
+  await partnerClient.mutation(api.partners.setWeeklyAvailability, {
+    targetLanguage: ROOMS_TARGET_LANGUAGE,
+    slots: Array.from({ length: 7 }, (_, dayOfWeek) => ({
+      dayOfWeek,
+      startMinute: 0,
+      endMinute: 1440,
+      timezone: "Asia/Kolkata",
+    })),
+  });
+  record("partner set weekly availability (every day)", true);
+
+  await partnerClient.mutation(api.partners.setAvailableNow, {
+    targetLanguage: ROOMS_TARGET_LANGUAGE,
+    available: true,
+  });
+  record("partner marked available now", true);
+
+  // --- Later booking (existence check: an upcoming "later" booking in roomsHome) ---
+  const homeBefore = await client.query(api.rooms.roomsHome, {});
+  let laterBookingId: Id<"roomBookings">;
+  const existingLater = homeBefore.find(
+    (b) => b.mode === "later" && b.targetLanguage === ROOMS_TARGET_LANGUAGE,
+  );
+  if (existingLater !== undefined) {
+    laterBookingId = existingLater._id;
+    reused.push("later room booking");
+  } else {
+    const slots = await client.query(api.rooms.availableSlots, {
+      targetLanguage: ROOMS_TARGET_LANGUAGE,
+      minutes: 10,
+      level: result.level,
+    });
+    if (slots.length === 0) fatal("No available slots found — partner availability may not be visible yet");
+    const slot = slots[0]!;
+    const laterReq = await client.mutation(api.rooms.requestRoomLater, {
+      scenario: "Practice ordering coffee and making small talk with a stranger",
+      minutes: 10,
+      targetLanguage: ROOMS_TARGET_LANGUAGE,
+      partnerProfileId: slot.partnerProfileId,
+      startAt: slot.startAt,
+    });
+    laterBookingId = laterReq.bookingId;
+    created.push("later room booking");
+  }
+  const laterDetail = await client.query(api.rooms.roomBookingDetail, { bookingId: laterBookingId });
+  // "in_progress"/"completed" too: on a re-run, step 8c below has already taken this same booking
+  // through joinRoom (and 8c's own dev:confirmRoomBookingForTest resets it back to "confirmed"
+  // before doing so) — this check's real intent is just "matched to a partner", not stuck at
+  // requested/no_partner/cancelled.
+  const LATER_BOOKING_MATCHED_STATUSES: readonly string[] = ["matched", "confirmed", "in_progress", "completed"];
+  record(
+    "later room booking is matched to the partner",
+    LATER_BOOKING_MATCHED_STATUSES.includes(laterDetail.status),
+    `status=${laterDetail.status} partnerId=${laterDetail.partnerId}`,
+  );
+
+  // --- Now request (existence check: an upcoming "now" booking in roomsHome) ---
+  const homeAfterLater = await client.query(api.rooms.roomsHome, {});
+  let nowBookingId: Id<"roomBookings">;
+  const existingNow = homeAfterLater.find(
+    (b) => b.mode === "now" && b.targetLanguage === ROOMS_TARGET_LANGUAGE,
+  );
+  if (existingNow !== undefined) {
+    nowBookingId = existingNow._id;
+    reused.push("now room booking");
+  } else {
+    const nowReq = await client.mutation(api.rooms.requestRoomNow, {
+      scenario: "Practice checking into a hotel",
+      minutes: 10,
+      targetLanguage: ROOMS_TARGET_LANGUAGE,
+    });
+    nowBookingId = nowReq.bookingId;
+    await partnerClient.mutation(api.partners.heartbeat, { targetLanguage: ROOMS_TARGET_LANGUAGE });
+    await partnerClient.mutation(api.rooms.acceptRoomRequest, { bookingId: nowBookingId });
+    created.push("now room booking");
+  }
+  const nowDetail = await client.query(api.rooms.roomBookingDetail, { bookingId: nowBookingId });
+  record(
+    "now room request matched to the partner (first-accept-wins path)",
+    nowDetail.status === "matched",
+    `status=${nowDetail.status} partnerId=${nowDetail.partnerId}`,
+  );
+
+  // --- Script (existence check: generateScript is a no-op once a version exists) ---
+  const scriptResult = await client.action(api.rooms.generateScript, { bookingId: laterBookingId });
+  if (scriptResult.generated) created.push("room script");
+  else reused.push("room script");
+  record(
+    "room script exists (generated once)",
+    scriptResult.version >= 1,
+    `version=${scriptResult.version} generated=${scriptResult.generated}`,
+  );
+  const scriptAgain = await client.action(api.rooms.generateScript, { bookingId: laterBookingId });
+  record(
+    "generateScript is a no-op on a second call — no further LLM call",
+    scriptAgain.generated === false && scriptAgain.version === scriptResult.version,
+  );
+  const script = await client.query(api.rooms.latestScript, { bookingId: laterBookingId });
+  record(
+    "script has lines for both roles, referencing the learner's goal words",
+    script !== null &&
+      script.lines.length > 0 &&
+      script.lines.some((l) => l.role === "learner") &&
+      script.lines.some((l) => l.role === "partner"),
+    script ? `${script.lines.length} lines, v${script.version}` : "null",
+  );
+
+  // --- Partner-facing queries -------------------------------------------------
+  const dashboard = await partnerClient.query(api.rooms.partnerDashboard, {});
+  record(
+    "partnerDashboard shows both booked sessions",
+    dashboard.booked.some((b) => b._id === laterBookingId) && dashboard.booked.some((b) => b._id === nowBookingId),
+    `booked=${dashboard.booked.length}`,
+  );
+
+  // --- 8c. Live room (Task B) — join, stream config, script tracking, on the REAL generated script ---
+  step("8c. Live room: join, streaming config, and script tracking");
+  const llmBeforeLiveRoom = (await client.query(api.llmMetrics.total, {})).count;
+
+  // Payment was never completed in this dev flow (see the note above on how this is tested),
+  // so push the booking to "confirmed" with a fresh, immediate window the same way verify.ts does.
+  runConvexCli(["run", "dev:confirmRoomBookingForTest", JSON.stringify({ bookingId: laterBookingId, startInMs: 0, minutes: 10 })]);
+
+  const learnerJoin = await client.action(api.liveRoom.joinRoom, { bookingId: laterBookingId });
+  const partnerJoin = await partnerClient.action(api.liveRoom.joinRoom, { bookingId: laterBookingId });
+  record(
+    "joinRoom: real LiveKit tokens minted for both roles",
+    learnerJoin.identity.startsWith("learner:") && partnerJoin.identity.startsWith("partner:"),
+    `learner=${learnerJoin.identity} partner=${partnerJoin.identity}`,
+  );
+
+  const livekitApiKey = runConvexCli(["env", "get", "LIVEKIT_API_KEY"]).trim();
+  const livekitApiSecret = runConvexCli(["env", "get", "LIVEKIT_API_SECRET"]).trim();
+  const verifier = new TokenVerifier(livekitApiKey, livekitApiSecret);
+  const learnerClaims = await verifier.verify(learnerJoin.token);
+  record(
+    "the learner's token verifies against the real LiveKit API secret, room = bookingId",
+    learnerClaims.sub === learnerJoin.identity && learnerClaims.video?.room === laterBookingId,
+    `sub=${learnerClaims.sub} room=${learnerClaims.video?.room}`,
+  );
+
+  const stateAfterJoin = await client.query(api.liveRoom.roomState, { bookingId: laterBookingId });
+  record(
+    "booking is \"in_progress\" once both have joined",
+    stateAfterJoin.status === "in_progress" && stateAfterJoin.learnerJoined && stateAfterJoin.partnerJoined,
+  );
+
+  const learnerStream = await client.action(api.liveRoom.roomStreamConfig, { bookingId: laterBookingId });
+  const partnerStream = await partnerClient.action(api.liveRoom.roomStreamConfig, { bookingId: laterBookingId });
+  record(
+    "roomStreamConfig: learner gets no keyterms, partner gets keyterms from the script (when it has any target words)",
+    learnerStream.connectionParams.keyterms_prompt === undefined,
+    `learner keyterms=${learnerStream.connectionParams.keyterms_prompt ?? "(none)"} partner keyterms=${partnerStream.connectionParams.keyterms_prompt ?? "(none)"}`,
+  );
+
+  // Speak the REAL generated script verbatim (guarantees a match for every learner line) to exercise
+  // deterministic line-tracking against actual LLM output, not a hand-written fixture.
+  if (script !== null) {
+    let ms = 0;
+    for (const line of script.lines) {
+      const speaker = line.role === "learner" ? client : partnerClient;
+      await speaker.mutation(api.liveRoom.saveRoomTurn, {
+        bookingId: laterBookingId,
+        transcript: line.text,
+        words: [],
+        startMs: ms,
+        endMs: ms + 2000,
+      });
+      ms += 2000;
+    }
+    const stateAfterScript = await client.query(api.liveRoom.roomState, { bookingId: laterBookingId });
+    const learnerLineCount = script.lines.filter((l) => l.role === "learner").length;
+    record(
+      "every learner line in the real script was matched and marked done",
+      stateAfterScript.currentLineIndex === null && stateAfterScript.doneLineIndices.length === learnerLineCount,
+      `done=${stateAfterScript.doneLineIndices.length}/${learnerLineCount}, currentLineIndex=${stateAfterScript.currentLineIndex}`,
+    );
+  } else {
+    info("no script to speak through — skipping the line-tracking check");
+  }
+
+  const llmAfterLiveRoom = (await client.query(api.llmMetrics.total, {})).count;
+  record(
+    "the live-room flow itself makes zero LLM calls (no safety-borderline hits in a real, clean script)",
+    llmAfterLiveRoom === llmBeforeLiveRoom,
+    `${llmAfterLiveRoom - llmBeforeLiveRoom} calls`,
+  );
 
   // --- 9. LLM usage ---------------------------------------------------------
   step("9. LLM Gateway usage for this run");

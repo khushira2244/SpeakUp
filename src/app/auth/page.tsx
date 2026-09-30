@@ -72,7 +72,7 @@ export default function AuthPage() {
 
   // Arrived already signed in (and not mid-signup): nothing to do here.
   useEffect(() => {
-    if (isAuthenticated && submitted === null) router.replace("/goal");
+    if (isAuthenticated && submitted === null) router.replace("/start");
   }, [isAuthenticated, submitted, router]);
 
   // After a successful sign-in, once the session is confirmed by the server:
@@ -90,7 +90,8 @@ export default function AuthPage() {
           await updateProfile({
             knownLanguages: [lang],
             primaryLanguage: lang,
-            // Temporary default until the language-selection UI exists.
+            // Placeholder so the profile is valid at sign-up; the "What do you
+            // want to learn?" screen (/learn) replaces it with the real choice.
             targetLanguage: lang === "en" ? "de" : "en",
             gender: submitted.gender,
           });
@@ -108,7 +109,7 @@ export default function AuthPage() {
             gender: me?.gender ?? "unspecified",
           });
         }
-        router.replace("/goal");
+        router.replace("/start");
       } catch {
         setSaveFailed(true);
         savingRef.current = false;

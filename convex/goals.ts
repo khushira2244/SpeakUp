@@ -21,6 +21,7 @@ import {
   deadlineValidator,
   goalPatternValidator,
   goalTypeValidator,
+  learnerGoalTypeValidator,
   goalWordValidator,
   knownLanguageValidator,
   levelCheckPromptValidator,
@@ -30,6 +31,7 @@ import {
 import {
   invalid,
   loadActiveGoal,
+  requireLearnerGoalType,
   requireOwnedGoal,
   requireUserId,
 } from "./lib/authz";
@@ -67,7 +69,7 @@ const MAX_GOAL_TEXT = 300;
  */
 export const setGoal = mutation({
   args: {
-    goalType: goalTypeValidator,
+    goalType: learnerGoalTypeValidator,
     goalText: v.string(),
     deadline: deadlineValidator,
     minutesPerDay: minutesPerDayValidator,
@@ -156,7 +158,9 @@ export const goalContext = internalQuery({
       minutesPerDay: goal.minutesPerDay,
       knownLanguages: profile.knownLanguages,
       primaryLanguage: profile.primaryLanguage,
-      targetLanguage: profile.targetLanguage,
+      // A partner_test goal fixes its own test language, independent of what
+      // the caller is personally learning (convex/partners.ts).
+      targetLanguage: goal.targetLanguageOverride ?? profile.targetLanguage,
       alreadyGenerated: existing !== null,
     };
   },
@@ -312,7 +316,7 @@ export const generateGoalTargets = internalAction({
 
 const activeGoalValidator = v.object({
   _id: v.id("goals"),
-  goalType: goalTypeValidator,
+  goalType: learnerGoalTypeValidator,
   goalText: v.string(),
   deadline: deadlineValidator,
   minutesPerDay: minutesPerDayValidator,
@@ -367,7 +371,7 @@ export const activeGoal = query({
 
     return {
       _id: goal._id,
-      goalType: goal.goalType,
+      goalType: requireLearnerGoalType(goal),
       goalText: goal.goalText,
       deadline: goal.deadline,
       minutesPerDay: goal.minutesPerDay,

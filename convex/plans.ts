@@ -26,6 +26,7 @@ import {
   minutesPerDayValidator,
   planDayValidator,
   planModeValidator,
+  planStatusValueValidator,
   targetLanguageValidator,
 } from "./schema";
 import { invalid, requireOwnedGoal, requireUserId } from "./lib/authz";
@@ -40,11 +41,11 @@ import {
   type TargetLanguage,
 } from "./lib/languages";
 import {
-  PLAN_JSON_SCHEMA,
   QUICK_PREP_PATTERN_COUNT,
   QUICK_PREP_WORD_COUNT,
   ValidationError,
   WEEK_DAY_COUNT,
+  planJsonSchema,
   validatePlanDays,
   wordsPerDayFor,
   type PlanMode,
@@ -182,6 +183,41 @@ export const savePlan = internalMutation({
   },
 });
 
+/** Upserts the one status row for a goal (there is at most one at a time). */
+export const setPlanStatus = internalMutation({
+  args: { goalId: v.id("goals"), userId: v.id("users"), status: planStatusValueValidator },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const existing = await ctx.db
+      .query("planStatus")
+      .withIndex("by_goal", (q) => q.eq("goalId", args.goalId))
+      .first();
+    const fields = {
+      goalId: args.goalId,
+      userId: args.userId,
+      status: args.status,
+      updatedAt: Date.now(),
+    };
+    if (existing === null) await ctx.db.insert("planStatus", fields);
+    else await ctx.db.replace("planStatus", existing._id, fields);
+    return null;
+  },
+});
+
+/** Called once a plan is actually saved: the plan's existence is "ready", so no status row is needed. */
+export const clearPlanStatus = internalMutation({
+  args: { goalId: v.id("goals") },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const existing = await ctx.db
+      .query("planStatus")
+      .withIndex("by_goal", (q) => q.eq("goalId", args.goalId))
+      .first();
+    if (existing !== null) await ctx.db.delete("planStatus", existing._id);
+    return null;
+  },
+});
+
 // ---------------------------------------------------------------------------
 // Deterministic reconciliation of LLM output
 // ---------------------------------------------------------------------------
@@ -191,49 +227,71 @@ function normalizeKey(text: string): string {
   return foldForMatching(text).replace(/\s+/gu, " ").trim();
 }
 
+type CanonicalWord = { word: string; meaning: string; pronunciationHint?: string };
+type SavedPlanDay = {
+  dayNo: number;
+  title: string;
+  words: CanonicalWord[];
+  patterns: string[];
+  practiceSummary: string;
+};
+
 /**
- * Rejects any word or pattern the goal does not actually contain, and replaces
- * every meaning with the server's stored primary-language meaning. The
- * pronunciation hint is likewise copied from goalTargets by word — it is
- * never asked of the plan LLM. After this, nothing the LLM invented can reach
- * the database.
+ * Maps each ID the model chose back to the full, server-owned word/pattern
+ * object. Every ID here was already checked against `wordById` / `patternById`
+ * by `validatePlanDays` (backed by the JSON schema's `enum`), so a lookup miss
+ * here would mean those two disagree — treated as a validation failure rather
+ * than a crash, and it triggers the LLM call's single retry same as any other
+ * rejection.
+ *
+ * `practiceSummary` is free text the model writes in the learner's primary
+ * language, so nothing here constrains its content — except this: it must
+ * never contain one of this call's own ID tokens (the model is told to quote
+ * the real word/pattern text instead, but occasionally echoes the ID it was
+ * just given). A leaked ID would show the learner a meaningless string like
+ * "id0", so it is rejected here and re-tried rather than shipped.
  */
 function reconcilePlanDays(
   days: ValidatedPlanDay[],
-  vocabulary: ReadonlyArray<{ word: string; meaning: string; pronunciationHint?: string }>,
-  patterns: ReadonlyArray<{ pattern: string }>,
-): ValidatedPlanDay[] {
-  const wordIndex = new Map(vocabulary.map((w) => [normalizeKey(w.word), w]));
-  const patternIndex = new Map(patterns.map((p) => [normalizeKey(p.pattern), p.pattern]));
+  wordById: ReadonlyMap<string, CanonicalWord>,
+  patternById: ReadonlyMap<string, string>,
+): SavedPlanDay[] {
+  const idLeak = new RegExp(`\\b(${[...wordById.keys(), ...patternById.keys()].join("|")})\\b`);
 
-  return days.map((day) => ({
-    ...day,
-    words: day.words.map((word) => {
-      const canonical = wordIndex.get(normalizeKey(word.word));
+  return days.map((day) => {
+    if (idLeak.test(day.practiceSummary)) {
+      throw new ValidationError(
+        `plan.days[${day.dayNo - 1}].practiceSummary: contains an internal ID instead of the actual word/pattern text. Never write "id0" / "p0" style tokens in practiceSummary.`,
+      );
+    }
+    return reconcilePlanDay(day, wordById, patternById);
+  });
+}
+
+function reconcilePlanDay(
+  day: ValidatedPlanDay,
+  wordById: ReadonlyMap<string, CanonicalWord>,
+  patternById: ReadonlyMap<string, string>,
+): SavedPlanDay {
+  return {
+    dayNo: day.dayNo,
+    title: day.title,
+    practiceSummary: day.practiceSummary,
+    words: day.words.map((id) => {
+      const canonical = wordById.get(id);
       if (canonical === undefined) {
-        throw new ValidationError(
-          `plan.days[${day.dayNo - 1}].words: "${word.word}" is not in this goal's vocabulary. Only use words from the supplied list.`,
-        );
-      }
-      // Meanings and hints are server-owned, never model-owned.
-      return {
-        word: canonical.word,
-        meaning: canonical.meaning,
-        ...(canonical.pronunciationHint !== undefined
-          ? { pronunciationHint: canonical.pronunciationHint }
-          : {}),
-      };
-    }),
-    patterns: day.patterns.map((pattern) => {
-      const canonical = patternIndex.get(normalizeKey(pattern));
-      if (canonical === undefined) {
-        throw new ValidationError(
-          `plan.days[${day.dayNo - 1}].patterns: "${pattern}" is not one of this goal's grammar patterns. Copy a pattern string exactly.`,
-        );
+        throw new ValidationError(`plan.days[${day.dayNo - 1}].words: unknown word id "${id}".`);
       }
       return canonical;
     }),
-  }));
+    patterns: day.patterns.map((id) => {
+      const canonical = patternById.get(id);
+      if (canonical === undefined) {
+        throw new ValidationError(`plan.days[${day.dayNo - 1}].patterns: unknown pattern id "${id}".`);
+      }
+      return canonical;
+    }),
+  };
 }
 
 /** Deterministic study order: not-yet words first, then practising, then the rest. */
@@ -263,9 +321,9 @@ function prioritizeVocabulary(context: {
 // ---------------------------------------------------------------------------
 
 const PLAN_SYSTEM = `You are a curriculum sequencer for SpeakUp, a speaking app for adult language learners.
-You are given a fixed vocabulary list and a fixed list of grammar patterns in the language being learned.
-Your job is ONLY to arrange them into a study plan and write short practice instructions in the learner's primary language.
-You must not invent vocabulary or grammar patterns — every word and pattern you use must be copied exactly from the supplied lists.
+You are given a fixed vocabulary list and a fixed list of grammar patterns, each with a short ID.
+Your job is ONLY to choose IDs to arrange into a study plan and write short practice instructions in the learner's primary language.
+You must not invent vocabulary or grammar patterns — every "words" and "patterns" entry you output must be one of the exact IDs supplied, never the word or pattern text itself.
 A strict validator checks your output, so follow the required shape exactly.`;
 
 function planPrompt(args: {
@@ -275,8 +333,8 @@ function planPrompt(args: {
   minutesPerDay: number;
   targetLanguage: TargetLanguage;
   primaryLanguage: KnownLanguage;
-  orderedWords: ReadonlyArray<{ word: string; meaning: string }>;
-  patterns: ReadonlyArray<{ pattern: string; example: string }>;
+  words: ReadonlyArray<{ id: string; word: string }>;
+  patterns: ReadonlyArray<{ id: string; pattern: string; example: string }>;
   hasLevelResult: boolean;
 }): string {
   const target = LANGUAGE_NAMES[args.targetLanguage];
@@ -285,6 +343,8 @@ function planPrompt(args: {
     args.mode === "quick_prep" ? QUICK_PREP_WORD_COUNT : wordsPerDayFor(args.minutesPerDay);
   const patternsPerDay = args.mode === "quick_prep" ? QUICK_PREP_PATTERN_COUNT : 1;
   const dayCount = args.mode === "quick_prep" ? 1 : WEEK_DAY_COUNT;
+  const sampleWordId = args.words[0]?.id ?? "id0";
+  const samplePatternId = args.patterns[0]?.id ?? "p0";
 
   const shape =
     args.mode === "quick_prep"
@@ -299,19 +359,19 @@ Learner's PRIMARY language (write titles and instructions in this): ${primary} (
 
 ${shape}
 
-Allowed ${target} vocabulary, already ordered by what this learner needs most${args.hasLevelResult ? " (their level check showed the earliest entries are the weakest)" : ""}. Use the "word" values EXACTLY as written:
-${args.orderedWords.map((w, i) => `${i + 1}. ${w.word}`).join("\n")}
+Allowed ${target} vocabulary, already ordered by what this learner needs most${args.hasLevelResult ? " (their level check showed the earliest entries are the weakest)" : ""}. Refer to a word ONLY by its ID (e.g. "${sampleWordId}") — never write the word itself in your answer:
+${args.words.map((w) => `${w.id}: ${w.word}`).join("\n")}
 
-Allowed ${target} grammar patterns. Copy a "pattern" string EXACTLY as written:
-${args.patterns.map((p, i) => `${i + 1}. "${p.pattern}" (example: ${p.example})`).join("\n")}
+Allowed ${target} grammar patterns. Refer to a pattern ONLY by its ID (e.g. "${samplePatternId}") — never write the pattern text in your answer:
+${args.patterns.map((p) => `${p.id}: "${p.pattern}" (example: ${p.example})`).join("\n")}
 
 Return a JSON object with a single field "days": an array of exactly ${dayCount} day object(s), in order. Each day object:
   - "title": a short title for the day in ${primary}, at most 8 words, naming the real situation it prepares the learner for.
-  - "words": an array of exactly ${wordsPerDay} object(s), each { "word": <copied exactly from the allowed vocabulary>, "meaning": <its meaning> }.
-  - "patterns": an array of exactly ${patternsPerDay} string(s), each copied exactly from the allowed grammar patterns.
-  - "practiceSummary": 2 to 4 sentences in ${primary} telling the learner exactly what to say out loud to practise this day's words and pattern. Describe one concrete speaking task. Any sentence the learner should actually say aloud stays in ${target}.
+  - "words": an array of exactly ${wordsPerDay} word ID(s) from the list above (e.g. "${sampleWordId}").
+  - "patterns": an array of exactly ${patternsPerDay} pattern ID(s) from the list above (e.g. "${samplePatternId}").
+  - "practiceSummary": 2 to 4 sentences in ${primary} telling the learner exactly what to say out loud to practise this day's words and pattern. Quote the actual ${target} word or pattern TEXT here (e.g. "${args.words[0]?.word ?? ""}"), never an ID like "${sampleWordId}" or "${samplePatternId}" — the learner must never see an ID. Describe one concrete speaking task.
 
-Prefer the earlier (higher-need) vocabulary entries first. Do not add any other fields.`;
+Prefer the earlier (higher-need) word IDs first — lower numbers mean higher need. Do not add any other fields.`;
 }
 
 // ---------------------------------------------------------------------------
@@ -344,33 +404,78 @@ async function runPlanGeneration(
     );
   }
 
-  const days = await llmJson({
-    system: PLAN_SYSTEM,
-    user: planPrompt({
-      mode,
-      goalType: context.goalType,
-      goalText: context.goalText,
-      minutesPerDay: context.minutesPerDay,
-      targetLanguage: context.targetLanguage,
-      primaryLanguage: context.primaryLanguage,
-      orderedWords,
-      patterns: context.patterns,
-      hasLevelResult: context.notYet.length + context.practising.length > 0,
+  // Short IDs the model must choose from (see planJsonSchema) instead of
+  // copying word/pattern text — the bug this replaces was the model producing
+  // a near-miss pattern string that failed exact-match reconciliation.
+  const vocabByKey = new Map(context.vocabulary.map((w) => [normalizeKey(w.word), w]));
+  const idWords = orderedWords.map((w, i) => ({ id: `id${i}`, word: w.word }));
+  const idPatterns = context.patterns.map((p, i) => ({ id: `p${i}`, ...p }));
+  const wordIds = new Set(idWords.map((w) => w.id));
+  const patternIds = new Set(idPatterns.map((p) => p.id));
+  const wordById = new Map<string, CanonicalWord>(
+    idWords.map(({ id, word }) => {
+      const canonical = vocabByKey.get(normalizeKey(word));
+      if (canonical === undefined) {
+        // orderedWords is derived from context.vocabulary, so this is unreachable.
+        throw new Error(`internal: ordered word "${word}" is missing from this goal's vocabulary`);
+      }
+      return [
+        id,
+        {
+          word: canonical.word,
+          meaning: canonical.meaning,
+          ...(canonical.pronunciationHint !== undefined
+            ? { pronunciationHint: canonical.pronunciationHint }
+            : {}),
+        },
+      ];
     }),
-    schemaName: "study_plan",
-    schema: PLAN_JSON_SCHEMA,
-    // Shape validation, then deterministic reconciliation against server data.
-    // Either throwing rejects the attempt and triggers the single retry.
-    validate: (raw) =>
-      reconcilePlanDays(
-        validatePlanDays(raw, { mode, minutesPerDay: context.minutesPerDay }),
-        context.vocabulary,
-        context.patterns,
-      ),
-    timeoutMs: 120_000,
-    maxTokens: 12_000,
-    recordCall: llmRecorder(ctx),
+  );
+  const patternById = new Map(idPatterns.map((p) => [p.id, p.pattern]));
+
+  await ctx.runMutation(internal.plans.setPlanStatus, {
+    goalId: args.goalId,
+    userId: args.userId,
+    status: "generating",
   });
+
+  let days: SavedPlanDay[];
+  try {
+    days = await llmJson({
+      system: PLAN_SYSTEM,
+      user: planPrompt({
+        mode,
+        goalType: context.goalType,
+        goalText: context.goalText,
+        minutesPerDay: context.minutesPerDay,
+        targetLanguage: context.targetLanguage,
+        primaryLanguage: context.primaryLanguage,
+        words: idWords,
+        patterns: idPatterns,
+        hasLevelResult: context.notYet.length + context.practising.length > 0,
+      }),
+      schemaName: "study_plan",
+      schema: planJsonSchema([...wordIds], [...patternIds]),
+      // Shape + ID-membership validation, then reconciliation to full objects.
+      // Either throwing rejects the attempt and triggers the single retry.
+      validate: (raw) =>
+        reconcilePlanDays(
+          validatePlanDays(raw, { mode, minutesPerDay: context.minutesPerDay, wordIds, patternIds }),
+          wordById,
+          patternById,
+        ),
+      timeoutMs: 120_000,
+      maxTokens: 12_000,
+      recordCall: llmRecorder(ctx),
+    });
+  } catch (error) {
+    await ctx.runMutation(internal.plans.setPlanStatus, {
+      goalId: args.goalId,
+      userId: args.userId,
+      status: "failed",
+    });
+    throw error;
+  }
 
   const saved: { planId: Id<"plans">; created: boolean } = await ctx.runMutation(
     internal.plans.savePlan,
@@ -383,6 +488,7 @@ async function runPlanGeneration(
       replaceExisting: args.replaceExisting,
     },
   );
+  await ctx.runMutation(internal.plans.clearPlanStatus, { goalId: args.goalId });
 
   return { ...saved, mode };
 }
