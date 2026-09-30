@@ -133,7 +133,7 @@ export function PromptStep({
           purpose="own"
           {...(goalId !== undefined ? { goalId } : {})}
           stopOn="manual"
-          maxSeconds={60}
+          maxSeconds={10}
           transcriptLabel={label}
           onLive={setLive}
           onFinal={onFinal}
