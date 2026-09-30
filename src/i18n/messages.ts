@@ -11,6 +11,16 @@ const en = {
   "brand.by": "by AdaptiveSkills",
   "brand.tagline": "Learn and speak what matters most.",
 
+  "landing.subline": "Personal speaking lessons + real conversations, in your own language.",
+  "landing.video.title": "SpeakUp demo video",
+  "landing.video.placeholder": "Demo video coming soon",
+  "landing.feature.speakingCheck": "Speaking check",
+  "landing.feature.dailyLabs": "Daily labs",
+  "landing.feature.liveRooms": "Live rooms with real people",
+  "landing.getStarted": "Get started",
+  "landing.haveAccount": "Already have an account?",
+  "landing.footer": "Best on mobile and tablet.",
+
   "common.continue": "Continue",
   "common.back": "Back",
   "level.starting": "Starting",
@@ -638,6 +648,16 @@ const hi: Messages = {
   "brand.name": "SpeakUp",
   "brand.by": "by AdaptiveSkills",
   "brand.tagline": "जो सच में ज़रूरी है, वही सीखें और बोलें।",
+
+  "landing.subline": "आपकी अपनी भाषा में निजी स्पीकिंग लेसन + असली बातचीत।",
+  "landing.video.title": "SpeakUp डेमो वीडियो",
+  "landing.video.placeholder": "डेमो वीडियो जल्द आ रहा है",
+  "landing.feature.speakingCheck": "स्पीकिंग चेक",
+  "landing.feature.dailyLabs": "डेली लैब्स",
+  "landing.feature.liveRooms": "असली लोगों के साथ लाइव रूम्स",
+  "landing.getStarted": "शुरू करें",
+  "landing.haveAccount": "पहले से खाता है?",
+  "landing.footer": "मोबाइल और टैबलेट पर बेहतरीन अनुभव।",
 
   "common.continue": "जारी रखें",
   "common.back": "वापस",

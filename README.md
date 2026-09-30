@@ -2,6 +2,15 @@
 
 **Learn and speak what matters most.**
 
+🔗 Live demo (frontend): [speak-up-chi-nine.vercel.app](https://speak-up-chi-nine.vercel.app)
+⚙️ Backend (Convex): [compassionate-hawk-312.convex.cloud](https://compassionate-hawk-312.convex.cloud)
+
+> 📱 Designed for mobile and tablet screens. On desktop it opens as a
+> centered mobile-width layout. For the best experience, open it on your
+> phone, or use your browser's device mode.
+
+🎥 Demo video: _(link coming soon)_
+
 > [AdaptiveSkills](https://github.com/khushira2244/AdaptiveSkills) is a
 > separate app, built in the same time window for **Shipaton** (RevenueCat's
 > hackathon). SpeakUp and AdaptiveSkills are two distinct apps — for language
