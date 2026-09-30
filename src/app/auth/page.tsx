@@ -95,7 +95,9 @@ export default function AuthPage() {
             targetLanguage: lang === "en" ? "de" : "en",
             gender: submitted.gender,
           });
-          router.replace("/intro");
+          // "What do you want to do?" — decides learner/partner/both, then
+          // /mode routes onward (partner skips /intro entirely).
+          router.replace("/mode");
           return;
         }
         if (me?.primaryLanguage) {

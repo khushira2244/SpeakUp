@@ -9,6 +9,7 @@ import {
   genderValidator,
   knownLanguageValidator,
   targetLanguageValidator,
+  userModeValidator,
 } from "./schema";
 import { getUserId, invalid, requireUserId } from "./lib/authz";
 import { LanguageProfileError, normalizeLanguageProfile } from "./lib/languages";
@@ -24,6 +25,8 @@ const publicUserValidator = v.object({
   targetLanguage: v.union(targetLanguageValidator, v.null()),
   gender: v.union(genderValidator, v.null()),
   createdAt: v.union(v.number(), v.null()),
+  /** Chosen once at signup; rows created before this feature default to "learner" here (never stored as such). */
+  mode: userModeValidator,
 });
 
 /** The signed-in user's own profile, or `null` when signed out. */
@@ -45,7 +48,19 @@ export const me = query({
       targetLanguage: user.targetLanguage ?? null,
       gender: user.gender ?? null,
       createdAt: user.createdAt ?? null,
+      mode: user.mode ?? "learner",
     };
+  },
+});
+
+/** Sets the caller's mode, chosen once on the post-signup "What do you want to do?" screen. */
+export const setMode = mutation({
+  args: { mode: userModeValidator },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const userId = await requireUserId(ctx);
+    await ctx.db.patch("users", userId, { mode: args.mode });
+    return null;
   },
 });
 

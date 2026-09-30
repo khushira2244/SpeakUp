@@ -30,6 +30,10 @@ function inr(paise: number): string {
   return `₹${(paise / 100).toFixed(2)}`;
 }
 
+function usd(cents: number): string {
+  return `$${(cents / 100).toFixed(2)}`;
+}
+
 type ChipKind = "earned" | "held" | "paid" | "notPaid";
 
 function chipFor(payoutStatus: "earned" | "held" | "paid" | null): ChipKind {
@@ -59,18 +63,42 @@ export default function PartnerEarningsPage() {
 
   if (!signedIn || status === "loading" || shouldRedirect || profile === null) return <Loading />;
 
-  const weekStart = Date.now() - WEEK_MS;
-  const weekTotal = (history ?? [])
-    .filter((h) => (h.scheduledStartAt ?? 0) >= weekStart && h.payoutStatus !== null)
-    .reduce((acc, h) => acc + h.earningInrPaise, 0);
+  const rows = history ?? [];
+  const balance = rows.filter((h) => h.payoutStatus === "earned");
+  const pending = rows.filter((h) => h.payoutStatus === "held");
+  const balanceInrPaise = balance.reduce((acc, h) => acc + h.earningInrPaise, 0);
+  const balanceUsdCents = balance.reduce((acc, h) => acc + h.earningUsdCents, 0);
+  const pendingInrPaise = pending.reduce((acc, h) => acc + h.earningInrPaise, 0);
+  const pendingUsdCents = pending.reduce((acc, h) => acc + h.earningUsdCents, 0);
 
   return (
     <PartnerScreen onBack={() => router.push("/partner/dashboard")}>
-      <h2 className="mt-6 text-[26px] leading-tight font-bold">{t("partner.earnings.title")}</h2>
+      <h2 className="mt-6 text-[26px] leading-tight font-bold">{t("partner.wallet.title")}</h2>
 
-      <section className="mt-5 rounded-2xl border border-accent bg-surface p-4">
-        <p className="text-base text-muted">{t("partner.earnings.thisWeek")}</p>
-        <p className="text-[28px] font-bold">{inr(weekTotal)}</p>
+      <section className="mt-5 grid grid-cols-2 gap-3">
+        <div className="rounded-2xl border border-accent bg-surface p-4">
+          <p className="text-base text-muted">{t("partner.wallet.balance")}</p>
+          <p className="text-[24px] font-bold">{inr(balanceInrPaise)}</p>
+          <p className="text-[13px] text-muted">{usd(balanceUsdCents)}</p>
+        </div>
+        <div className="rounded-2xl border border-line bg-surface p-4">
+          <p className="text-base text-muted">{t("partner.wallet.pending")}</p>
+          <p className="text-[24px] font-bold">{inr(pendingInrPaise)}</p>
+          <p className="text-[13px] text-muted">{usd(pendingUsdCents)}</p>
+        </div>
+      </section>
+
+      <section className="mt-4">
+        <button
+          type="button"
+          disabled
+          className="flex h-14 w-full cursor-not-allowed items-center justify-center gap-2 rounded-2xl border border-line bg-surface text-[17px] font-semibold text-muted"
+        >
+          {t("partner.wallet.withdraw")}
+          <span className="rounded-full border border-line-strong px-2 py-0.5 text-[13px] leading-tight">
+            {t("partner.wallet.withdrawSoon")}
+          </span>
+        </button>
       </section>
 
       <section className="mt-6">

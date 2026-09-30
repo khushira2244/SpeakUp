@@ -12,33 +12,45 @@ function dayShortLabel(dayOfWeek: number, lang: string): string {
   d.setDate(d.getDate() + dayOfWeek);
   return new Intl.DateTimeFormat(lang === "hi" ? "hi-IN" : "en-GB", { weekday: "short" }).format(d);
 }
-/** 2-hour blocks, 9am to 9pm. */
-const BLOCKS: Array<{ start: number; end: number }> = Array.from({ length: 6 }, (_, i) => ({
-  start: (9 + i * 2) * 60,
-  end: (9 + (i + 1) * 2) * 60,
-}));
 
-function blockLabel(minutes: number): string {
+function formatTime(minutes: number): string {
   const h = Math.floor(minutes / 60);
+  const m = minutes % 60;
   const period = h >= 12 ? "PM" : "AM";
   const h12 = h % 12 === 0 ? 12 : h % 12;
-  return `${h12} ${period}`;
+  return `${h12}:${String(m).padStart(2, "0")} ${period}`;
+}
+
+function minutesToTimeInput(minutes: number): string {
+  const h = Math.floor(minutes / 60);
+  const m = minutes % 60;
+  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+}
+
+function timeInputToMinutes(value: string): number | null {
+  const match = /^(\d{2}):(\d{2})$/.exec(value);
+  if (!match) return null;
+  const h = Number(match[1]);
+  const m = Number(match[2]);
+  if (h > 23 || m > 59) return null;
+  return h * 60 + m;
 }
 
 type Slot = { dayOfWeek: number; startMinute: number; endMinute: number; timezone: string };
-/** `day -> set of block indices that are on`. */
-type Grid = Record<number, Set<number>>;
+type Range = { start: number; end: number };
+/** `day -> the custom hour ranges on for that day`. */
+type Grid = Record<number, Range[]>;
 
 function emptyGrid(): Grid {
-  return Object.fromEntries(DAYS.map((d) => [d, new Set<number>()])) as Grid;
+  return Object.fromEntries(DAYS.map((d) => [d, []])) as Grid;
 }
 
 function gridFromSlots(slots: readonly Slot[]): Grid {
   const g = emptyGrid();
   for (const s of slots) {
-    const i = BLOCKS.findIndex((b) => b.start === s.startMinute && b.end === s.endMinute);
-    if (i !== -1) g[s.dayOfWeek]?.add(i);
+    g[s.dayOfWeek]?.push({ start: s.startMinute, end: s.endMinute });
   }
+  for (const d of DAYS) g[d]?.sort((a, b) => a.start - b.start);
   return g;
 }
 
@@ -69,6 +81,9 @@ export function AvailabilityGrid({
   const [day, setDay] = useState<number>(new Date().getDay());
   const [grid, setGrid] = useState<Grid>(() => gridFromSlots(initialSlots));
   const [timezone, setTimezone] = useState<string>(() => initialSlots[0]?.timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone);
+  const [newStart, setNewStart] = useState("09:00");
+  const [newEnd, setNewEnd] = useState("11:00");
+  const [rangeError, setRangeError] = useState<string | null>(null);
 
   // If the loaded availability arrives after first paint, adopt it once.
   useEffect(() => {
@@ -85,25 +100,35 @@ export function AvailabilityGrid({
     return supported.includes(timezone) ? supported : [timezone, ...supported];
   }, [timezone]);
 
-  function toggleBlock(blockIndex: number) {
-    setGrid((prev) => {
-      const next: Grid = { ...prev, [day]: new Set(prev[day]) };
-      if (next[day]!.has(blockIndex)) next[day]!.delete(blockIndex);
-      else next[day]!.add(blockIndex);
-      return next;
-    });
+  function addRange() {
+    const start = timeInputToMinutes(newStart);
+    const end = timeInputToMinutes(newEnd);
+    if (start === null || end === null || start >= end) {
+      setRangeError(t("partner.setup.invalidRange"));
+      return;
+    }
+    setRangeError(null);
+    setGrid((prev) => ({
+      ...prev,
+      [day]: [...(prev[day] ?? []), { start, end }].sort((a, b) => a.start - b.start),
+    }));
+  }
+
+  function removeRange(index: number) {
+    setGrid((prev) => ({ ...prev, [day]: (prev[day] ?? []).filter((_, i) => i !== index) }));
   }
 
   function save() {
     const slots: Slot[] = [];
     for (const d of DAYS) {
-      for (const i of grid[d] ?? []) {
-        const b = BLOCKS[i]!;
-        slots.push({ dayOfWeek: d, startMinute: b.start, endMinute: b.end, timezone });
+      for (const r of grid[d] ?? []) {
+        slots.push({ dayOfWeek: d, startMinute: r.start, endMinute: r.end, timezone });
       }
     }
     onSave(slots);
   }
+
+  const dayRanges = grid[day] ?? [];
 
   return (
     <div>
@@ -124,28 +149,85 @@ export function AvailabilityGrid({
             )}
           >
             {dayShortLabel(d, lang)}
+            {(grid[d]?.length ?? 0) > 0 ? (
+              <span className={cx("ml-1.5 inline-block size-1.5 rounded-full align-middle", day === d ? "bg-accent-ink" : "bg-accent")} />
+            ) : null}
           </button>
         ))}
       </div>
 
-      <div className="mt-4 grid grid-cols-2 gap-2">
-        {BLOCKS.map((b, i) => {
-          const on = grid[day]?.has(i) ?? false;
-          return (
-            <button
-              key={i}
-              type="button"
-              aria-pressed={on}
-              onClick={() => toggleBlock(i)}
-              className={cx(
-                "flex min-h-12 items-center justify-center rounded-xl border px-3 text-base font-semibold",
-                on ? "border-accent bg-accent/15 text-fg" : "border-line bg-surface text-muted hover:border-line-strong",
-              )}
-            >
-              {blockLabel(b.start)} – {blockLabel(b.end)}
-            </button>
-          );
-        })}
+      <div className="mt-4">
+        {dayRanges.length === 0 ? (
+          <p className="text-base text-muted">{t("partner.setup.noRanges")}</p>
+        ) : (
+          <ul className="flex flex-col gap-2">
+            {dayRanges.map((r, i) => (
+              <li
+                key={i}
+                className="flex items-center justify-between gap-3 rounded-xl border border-accent bg-accent/10 px-3 py-2.5"
+              >
+                <span className="text-base font-semibold">
+                  {formatTime(r.start)} – {formatTime(r.end)}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => removeRange(i)}
+                  aria-label={t("partner.setup.removeRange")}
+                  className="grid size-8 shrink-0 place-items-center rounded-full text-muted hover:bg-surface-2"
+                >
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" aria-hidden="true">
+                    <path d="M6 6l12 12M18 6L6 18" />
+                  </svg>
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+
+        <div className="mt-3 flex items-end gap-2">
+          <div className="flex-1">
+            <label htmlFor="range-start" className="mb-1 block text-[13px] text-muted">
+              {t("partner.setup.startTime")}
+            </label>
+            <input
+              id="range-start"
+              type="time"
+              value={newStart}
+              onChange={(e) => {
+                setNewStart(e.target.value);
+                setRangeError(null);
+              }}
+              className="h-12 w-full rounded-xl border border-line bg-surface px-3 text-base text-fg focus:border-accent focus:outline-none"
+            />
+          </div>
+          <div className="flex-1">
+            <label htmlFor="range-end" className="mb-1 block text-[13px] text-muted">
+              {t("partner.setup.endTime")}
+            </label>
+            <input
+              id="range-end"
+              type="time"
+              value={newEnd}
+              onChange={(e) => {
+                setNewEnd(e.target.value);
+                setRangeError(null);
+              }}
+              className="h-12 w-full rounded-xl border border-line bg-surface px-3 text-base text-fg focus:border-accent focus:outline-none"
+            />
+          </div>
+          <button
+            type="button"
+            onClick={addRange}
+            className="h-12 shrink-0 rounded-xl border border-line-strong px-4 text-base font-semibold hover:border-accent"
+          >
+            {t("partner.setup.addRange")}
+          </button>
+        </div>
+        {rangeError ? (
+          <p role="alert" className="mt-2 text-base text-danger">
+            {rangeError}
+          </p>
+        ) : null}
       </div>
 
       <div className="mt-5">

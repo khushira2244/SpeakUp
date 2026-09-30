@@ -13,6 +13,8 @@ import { Sheet } from "@/components/home/sheet";
 import { useAuthGuard } from "@/lib/use-auth-guard";
 import { usePartnerProfile } from "@/components/partner/use-partner-profile";
 import { PartnerScreen } from "@/components/partner/partner-screen";
+import { usePartnerAlerts } from "@/components/partner/use-partner-alerts";
+import { ToastStack } from "@/components/partner/toast-stack";
 
 const HEARTBEAT_MS = 60_000;
 const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
@@ -62,6 +64,8 @@ export default function PartnerDashboardPage() {
   const [acceptError, setAcceptError] = useState<{ id: Id<"roomBookings">; message: string } | null>(null);
   const [toggling, setToggling] = useState(false);
 
+  const alerts = usePartnerAlerts(openNow, dashboard?.booked);
+
   const shouldRedirect = signedIn && status === "ready" && (profile === null || profile.status !== "approved");
 
   useEffect(() => {
@@ -72,7 +76,7 @@ export default function PartnerDashboardPage() {
   // Heartbeat while "available now" is on and this page is open.
   useEffect(() => {
     if (!profile?.availableNow) return;
-    const id = setInterval(() => void heartbeat({ targetLanguage: "en" }), HEARTBEAT_MS);
+    const id = setInterval(() => void heartbeat({ targetLanguage: profile!.targetLanguage }), HEARTBEAT_MS);
     return () => clearInterval(id);
   }, [profile?.availableNow, heartbeat]);
 
@@ -81,7 +85,7 @@ export default function PartnerDashboardPage() {
   async function onToggleAvailable() {
     setToggling(true);
     try {
-      await setAvailableNow({ targetLanguage: "en", available: !profile!.availableNow });
+      await setAvailableNow({ targetLanguage: profile!.targetLanguage, available: !profile!.availableNow });
     } finally {
       setToggling(false);
     }
@@ -114,9 +118,38 @@ export default function PartnerDashboardPage() {
 
   const detailsRequest = openNow?.find((r) => r._id === detailsId) ?? null;
 
+  type NowItem = NonNullable<typeof openNow>[number];
+  type BookedItem = NonNullable<typeof dashboard>["booked"][number];
+  type OpenRoomEntry = { kind: "now"; sortAt: number; item: NowItem } | { kind: "booked"; sortAt: number; item: BookedItem };
+  const openRoomEntries: OpenRoomEntry[] = [
+    ...(openNow ?? []).map((r): OpenRoomEntry => ({ kind: "now", sortAt: r.matchDeadlineAt, item: r })),
+    ...(dashboard?.booked ?? []).map((b): OpenRoomEntry => ({ kind: "booked", sortAt: b.scheduledStartAt ?? Number.POSITIVE_INFINITY, item: b })),
+  ].sort((a, b) => a.sortAt - b.sortAt);
+  const openRoomsLoading = openNow === undefined || dashboard === undefined;
+
   return (
     <PartnerScreen onBack={() => router.push("/home")}>
-      <h2 className="mt-6 text-[26px] leading-tight font-bold">{t("partner.dashboard.title")}</h2>
+      <ToastStack toasts={alerts.toasts} onDismiss={alerts.dismissToast} />
+
+      <div className="mt-6 flex items-center justify-between gap-3">
+        <h2 className="text-[26px] leading-tight font-bold">{t("partner.dashboard.title")}</h2>
+        {alerts.permission === "default" ? (
+          <button
+            type="button"
+            onClick={alerts.requestNotifications}
+            className="shrink-0 rounded-full border border-line-strong px-3 py-1.5 text-[13px] font-semibold hover:border-accent"
+          >
+            {t("partner.alerts.enable")}
+          </button>
+        ) : alerts.permission === "granted" ? (
+          <span className="shrink-0 rounded-full bg-accent/15 px-3 py-1.5 text-[13px] font-semibold text-accent">
+            {t("partner.alerts.on")}
+          </span>
+        ) : null}
+      </div>
+      {alerts.permission === "denied" ? (
+        <p className="mt-1 text-[13px] text-muted">{t("partner.alerts.blocked")}</p>
+      ) : null}
 
       <section className="mt-5 rounded-2xl border border-line bg-surface p-4">
         <div className="flex items-center justify-between gap-3">
@@ -147,96 +180,87 @@ export default function PartnerDashboardPage() {
       </section>
 
       <section className="mt-6">
-        <h3 className="text-[18px] font-bold">
-          {t("partner.dashboard.requestsNow")}
-          {openNow && openNow.length > 0 ? ` (${openNow.length})` : ""}
-        </h3>
-        {openNow === undefined ? (
+        <div className="flex items-center gap-2">
+          <h3 className="text-[18px] font-bold">{t("partner.dashboard.openRooms")}</h3>
+          {openNow && openNow.length > 0 ? (
+            <span className="grid size-6 place-items-center rounded-full bg-accent text-[13px] font-bold text-accent-ink">
+              {openNow.length}
+            </span>
+          ) : null}
+        </div>
+        {openRoomsLoading ? (
           <div className="mt-3 flex justify-center text-muted" role="status">
             <Spinner />
           </div>
-        ) : openNow.length === 0 ? (
-          <p className="mt-2 text-base text-muted">{t("partner.dashboard.noRequests")}</p>
+        ) : openRoomEntries.length === 0 ? (
+          <p className="mt-2 text-base text-muted">{t("partner.dashboard.noOpenRooms")}</p>
         ) : (
           <ul className="mt-3 flex flex-col gap-3">
-            {openNow.map((r) => (
-              <li key={r._id} className="rounded-2xl border border-line bg-surface p-4">
-                <div className="flex items-center justify-between gap-2">
-                  <span className="font-semibold break-words">{r.scenario}</span>
-                  <span className="shrink-0 rounded-full bg-accent/15 px-2.5 py-0.5 text-[13px] font-semibold text-accent">
-                    {t("room.live.minSession", { n: r.minutes })}
-                  </span>
-                </div>
-                <p className="mt-1 text-base text-muted">
-                  {t("partner.dashboard.learnerLevel")}: {t(`level.${r.learnerLevel}` as MessageKey)}
-                </p>
-                {acceptError?.id === r._id ? (
-                  <p role="alert" className="mt-2 text-base text-danger">
-                    {acceptError.message}
-                  </p>
-                ) : null}
-                <div className="mt-3 flex gap-3">
-                  <button
-                    type="button"
-                    onClick={() => setDetailsId(r._id)}
-                    className="h-11 flex-1 rounded-xl border border-line-strong text-base font-semibold"
-                  >
-                    {t("partner.dashboard.viewDetails")}
-                  </button>
-                  <PrimaryButton
-                    type="button"
-                    className="h-11 flex-1"
-                    busy={acceptingId === r._id}
-                    onClick={() => void onAccept(r._id)}
-                  >
-                    {t("partner.dashboard.accept")}
-                  </PrimaryButton>
-                </div>
-              </li>
-            ))}
-          </ul>
-        )}
-      </section>
-
-      <section className="mt-6">
-        <h3 className="text-[18px] font-bold">{t("partner.dashboard.booked")}</h3>
-        {dashboard === undefined ? (
-          <div className="mt-3 flex justify-center text-muted" role="status">
-            <Spinner />
-          </div>
-        ) : dashboard.booked.length === 0 ? (
-          <p className="mt-2 text-base text-muted">{t("partner.dashboard.noBooked")}</p>
-        ) : (
-          <ul className="mt-3 flex flex-col gap-3">
-            {dashboard.booked.map((b) => (
-              <li key={b._id}>
-                <button
-                  type="button"
-                  onClick={() => router.push(`/room/${b._id}`)}
-                  className="flex w-full flex-col gap-1 rounded-2xl border border-line bg-surface p-4 text-left hover:border-accent"
-                >
+            {openRoomEntries.map((entry) =>
+              entry.kind === "now" ? (
+                <li key={`now-${entry.item._id}`} className="rounded-2xl border border-line bg-surface p-4">
                   <div className="flex items-center justify-between gap-2">
-                    <span className="font-semibold break-words">{b.scenario}</span>
+                    <span className="font-semibold break-words">{entry.item.scenario}</span>
                     <span className="shrink-0 rounded-full bg-accent/15 px-2.5 py-0.5 text-[13px] font-semibold text-accent">
-                      {t(`room.home.status.${b.status}` as MessageKey)}
+                      {t("room.live.minSession", { n: entry.item.minutes })}
                     </span>
                   </div>
-                  <p className="text-base text-muted">
-                    {b.mode === "now" || b.scheduledStartAt === null
-                      ? t("room.home.now")
-                      : new Intl.DateTimeFormat(lang === "hi" ? "hi-IN" : "en-GB", {
-                          weekday: "short",
-                          day: "numeric",
-                          month: "short",
-                          hour: "numeric",
-                          minute: "2-digit",
-                        }).format(new Date(b.scheduledStartAt))}
-                    {" · "}
-                    {t("room.live.minSession", { n: b.minutes })}
+                  <p className="mt-1 text-base text-muted">
+                    {t("partner.dashboard.learnerLevel")}: {t(`level.${entry.item.learnerLevel}` as MessageKey)}
                   </p>
-                </button>
-              </li>
-            ))}
+                  {acceptError?.id === entry.item._id ? (
+                    <p role="alert" className="mt-2 text-base text-danger">
+                      {acceptError.message}
+                    </p>
+                  ) : null}
+                  <div className="mt-3 flex gap-3">
+                    <button
+                      type="button"
+                      onClick={() => setDetailsId(entry.item._id)}
+                      className="h-11 flex-1 rounded-xl border border-line-strong text-base font-semibold"
+                    >
+                      {t("partner.dashboard.viewDetails")}
+                    </button>
+                    <PrimaryButton
+                      type="button"
+                      className="h-11 flex-1"
+                      busy={acceptingId === entry.item._id}
+                      onClick={() => void onAccept(entry.item._id)}
+                    >
+                      {t("partner.dashboard.accept")}
+                    </PrimaryButton>
+                  </div>
+                </li>
+              ) : (
+                <li key={`booked-${entry.item._id}`}>
+                  <button
+                    type="button"
+                    onClick={() => router.push(`/room/${entry.item._id}`)}
+                    className="flex w-full flex-col gap-1 rounded-2xl border border-line bg-surface p-4 text-left hover:border-accent"
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="font-semibold break-words">{entry.item.scenario}</span>
+                      <span className="shrink-0 rounded-full bg-accent/15 px-2.5 py-0.5 text-[13px] font-semibold text-accent">
+                        {t(`room.home.status.${entry.item.status}` as MessageKey)}
+                      </span>
+                    </div>
+                    <p className="text-base text-muted">
+                      {entry.item.mode === "now" || entry.item.scheduledStartAt === null
+                        ? t("room.home.now")
+                        : new Intl.DateTimeFormat(lang === "hi" ? "hi-IN" : "en-GB", {
+                            weekday: "short",
+                            day: "numeric",
+                            month: "short",
+                            hour: "numeric",
+                            minute: "2-digit",
+                          }).format(new Date(entry.item.scheduledStartAt))}
+                      {" · "}
+                      {t("room.live.minSession", { n: entry.item.minutes })}
+                    </p>
+                  </button>
+                </li>
+              ),
+            )}
           </ul>
         )}
       </section>

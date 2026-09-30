@@ -1051,6 +1051,7 @@ const partnerHistoryItemValidator = v.object({
   status: roomStatusValidator,
   payoutStatus: v.union(payoutStatusValidator, v.null()),
   earningInrPaise: v.number(),
+  earningUsdCents: v.number(),
 });
 
 /** The caller's own finished sessions (as a partner) with each one's payout status, most recent first. */
@@ -1082,6 +1083,7 @@ export const partnerSessionHistory = query({
         status: b.status,
         payoutStatus: payout?.status ?? null,
         earningInrPaise: partnerEarning(b.minutes).earningInrPaise,
+        earningUsdCents: partnerEarning(b.minutes).earningUsdCents,
       });
     }
     out.sort((a, b) => (b.scheduledStartAt ?? 0) - (a.scheduledStartAt ?? 0));

@@ -45,6 +45,13 @@ export const minutesPerDayValidator = v.union(
   v.literal(45),
 );
 
+/** Chosen once at signup (screen: "What do you want to do?"). Missing on any row created before this field existed — always read as `mode ?? "learner"`. */
+export const userModeValidator = v.union(
+  v.literal("learner"),
+  v.literal("partner"),
+  v.literal("both"),
+);
+
 export const genderValidator = v.union(
   v.literal("female"),
   v.literal("male"),
@@ -371,6 +378,7 @@ export default defineSchema({
     // above by migrations.backfillUserLanguages and removed (widen-migrate-
     // narrow). No row carries it any more, so the schema no longer allows it.
     gender: v.optional(genderValidator),
+    mode: v.optional(userModeValidator),
     createdAt: v.optional(v.number()),
   })
     .index("email", ["email"])

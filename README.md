@@ -2,6 +2,12 @@
 
 **Learn and speak what matters most.**
 
+> [AdaptiveSkills](https://github.com/khushira2244/AdaptiveSkills) is a
+> separate app, built in the same time window for **Shipaton** (RevenueCat's
+> hackathon). SpeakUp and AdaptiveSkills are two distinct apps — for language
+> learning specifically, I kept it as its own app, SpeakUp, built around
+> AssemblyAI's speech features for this hackathon.
+
 SpeakUp is an adaptive spoken-language learning platform built around a learner's
 real-world goal.
 
@@ -174,11 +180,22 @@ evidence there is.
 
 ### 7. Partners get paid
 
-Anyone fluent in a supported language can apply to be a partner: take a
-short speaking test, set the hours they're free, and start accepting
-session requests. Partners see their upcoming sessions, toggle availability
-in real time, and track earnings — paid once a session completes, refunded
-automatically if a learner doesn't show, and withheld if a partner doesn't.
+The choice is made once, right after signup — "Learn to speak", "Help
+others practise and earn", or "Both" — with a "Become a partner" entry
+on Home for anyone who picks Both or changes their mind later. Going the
+partner route asks which language they can help with, then goes straight
+into a short speaking test; approval sets their free-form weekly hours
+(any start/end time, not fixed blocks).
+
+Once approved, a partner's dashboard is one open-rooms list — now-requests
+to accept and upcoming booked sessions to join — sorted by time, with a
+reactive badge and an in-app toast (plus an optional browser notification)
+the moment a new request arrives or a booked session is starting soon.
+
+Earnings live in a wallet: balance (earned), pending (held), and the full
+session history — paid once a session completes, refunded automatically
+if a learner doesn't show, and withheld if a partner doesn't. Withdrawals
+aren't wired to a real payout provider yet.
 
 ### 8. Passes
 

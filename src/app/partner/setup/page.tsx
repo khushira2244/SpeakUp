@@ -51,7 +51,7 @@ export default function PartnerSetupPage() {
   const setWeeklyAvailability = useMutation(api.partners.setWeeklyAvailability);
   const slots = useQuery(
     api.partners.myWeeklyAvailability,
-    profile && profile.status === "approved" ? { targetLanguage: "en" } : "skip",
+    profile && profile.status === "approved" ? { targetLanguage: profile.targetLanguage } : "skip",
   );
 
   const [retaking, setRetaking] = useState(false);
@@ -73,7 +73,7 @@ export default function PartnerSetupPage() {
   async function onRetake() {
     setRetaking(true);
     try {
-      await applyAsPartner({ targetLanguage: "en" });
+      await applyAsPartner({ targetLanguage: profile!.targetLanguage });
       router.push("/partner/test");
     } finally {
       setRetaking(false);
@@ -84,7 +84,7 @@ export default function PartnerSetupPage() {
     setSaving(true);
     setSaved(false);
     try {
-      await setWeeklyAvailability({ targetLanguage: "en", slots: newSlots });
+      await setWeeklyAvailability({ targetLanguage: profile!.targetLanguage, slots: newSlots });
       setSaved(true);
     } finally {
       setSaving(false);
