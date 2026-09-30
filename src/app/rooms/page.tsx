@@ -5,7 +5,7 @@ import { useQuery } from "convex/react";
 import { api } from "@convex/_generated/api";
 import type { MessageKey } from "@/i18n/messages";
 import { useI18n } from "@/i18n/provider";
-import { BrandHeader, PrimaryButton, Screen, Spinner } from "@/components/ui";
+import { BackButton, BrandHeader, PrimaryButton, Screen, Spinner } from "@/components/ui";
 import { useAuthGuard } from "@/lib/use-auth-guard";
 
 const LIVE_STATUSES = new Set(["confirmed", "in_progress"]);
@@ -29,7 +29,10 @@ export default function RoomsHomePage() {
 
   return (
     <Screen>
-      <BrandHeader />
+      <div className="relative">
+        <BackButton onClick={() => router.push("/home")} />
+        <BrandHeader />
+      </div>
       <div className="mt-8">
         <h2 className="text-[28px] leading-tight font-bold">{t("room.home.title")}</h2>
         <p className="mt-2 text-base text-muted">{t("room.home.subtitle")}</p>

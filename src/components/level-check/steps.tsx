@@ -51,6 +51,7 @@ export function WordStep({
             purpose="target"
             {...(goalId !== undefined ? { goalId } : {})}
             stopOn="first-turn"
+            maxSeconds={10}
             settleMs={700}
             idleText={t("lc.word.tap")}
             listeningSubText={t("lc.word.speakNow")}
