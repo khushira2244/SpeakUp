@@ -187,6 +187,44 @@ Room sessions are priced and booked separately, on top of an active pass.
 
 ---
 
+## Architecture
+
+```mermaid
+flowchart LR
+    UI["Next.js frontend<br/>(React screens)"]
+
+    subgraph Convex["Convex backend"]
+        FN["Queries · Mutations · Actions"]
+        DB[("Reactive database")]
+        STORE[("File storage<br/>(call recordings)")]
+        SCHED["Scheduled functions<br/>(scoring, plans, no-show checks,<br/>payment capture/refund)"]
+    end
+
+    Auth["Convex Auth<br/>password + Google"]
+    AAI["AssemblyAI<br/>speech-to-text + LLM Gateway"]
+    LK["LiveKit<br/>live audio rooms"]
+    RP["Razorpay<br/>passes + room payments"]
+
+    UI <-->|"reactive queries/mutations"| FN
+    UI -->|"short-lived tokens"| AAI
+    UI <-->|"WebRTC audio"| LK
+    FN <--> DB
+    FN --> STORE
+    FN <--> SCHED
+    FN <--> Auth
+    FN -->|"mint tokens, transcribe, generate goals/scripts/feedback"| AAI
+    FN -->|"mint room-join tokens"| LK
+    FN -->|"create orders, capture/refund"| RP
+    RP -->|"signed webhook"| FN
+```
+
+The frontend never talks to AssemblyAI, LiveKit, or Razorpay with a long-lived
+secret — Convex mints a short-lived token (or verifies a signature) for every
+one of those calls, and every function checks that the caller owns whatever
+it's reading or writing before touching the database.
+
+---
+
 ## Tech stack
 
 - **[Convex](https://convex.dev)** — database, server functions, scheduled
