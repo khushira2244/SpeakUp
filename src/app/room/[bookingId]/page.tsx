@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { useParams } from "next/navigation";
+import { useParams, useRouter } from "next/navigation";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "@convex/_generated/api";
 import type { Id } from "@convex/_generated/dataModel";
@@ -48,6 +48,7 @@ export default function RoomPage() {
   const params = useParams<{ bookingId: string }>();
   const bookingId = params.bookingId as Id<"roomBookings">;
   const signedIn = useAuthGuard();
+  const router = useRouter();
   const { t } = useI18n();
 
   const roomState = useQuery(api.liveRoom.roomState, signedIn ? { bookingId } : "skip");
@@ -129,6 +130,7 @@ export default function RoomPage() {
         joining={joining}
         joinError={joinError}
         onJoin={() => void handleJoin()}
+        onBack={() => router.push("/rooms")}
       />
     );
   }

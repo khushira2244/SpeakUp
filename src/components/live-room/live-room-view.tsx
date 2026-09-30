@@ -172,6 +172,7 @@ export function LiveRoomView({
                   <span className="text-base font-semibold text-muted">{mine ? t("room.live.you") : otherRoleWord}</span>
                 </div>
                 <p className="text-lg leading-snug">{line.text}</p>
+                {line.meaning ? <p className="mt-0.5 text-base text-muted italic">({line.meaning})</p> : null}
               </div>
             );
           })}

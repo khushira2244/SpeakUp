@@ -154,6 +154,8 @@ export const roomScriptRoleValidator = v.union(v.literal("learner"), v.literal("
 export const roomScriptLineValidator = v.object({
   role: roomScriptRoleValidator,
   text: v.string(),
+  /** Translation of `text` into the learner's own primaryLanguage — shown alongside the line so speaking it takes confidence, not guesswork. Unset for a manually-edited line (no LLM call) or a pre-existing script. */
+  meaning: v.optional(v.string()),
   words: v.array(v.string()),
 });
 

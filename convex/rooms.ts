@@ -434,6 +434,7 @@ const SCRIPT_SYSTEM = `You are writing a short two-person practice dialogue for 
 You are given a learner's goal words in the language they are learning, each with a short ID, plus a scenario and the learner's level.
 Write an ordered back-and-forth script between "learner" and "partner" that rehearses that scenario, using ONLY the supplied words.
 You must refer to a word ONLY by its ID in "wordIds" — never write the word itself in that field (the "text" field is where the actual line goes).
+Every line also needs a "meaning": a plain translation of that exact line into the learner's own primary language, so the learner knows what they are about to say before they say it — this is shown right under the line, never guessed at.
 A strict validator checks your output, so follow the required shape exactly.`;
 
 function scriptPrompt(args: {
@@ -457,6 +458,7 @@ ${args.words.map((w) => `${w.id}: ${w.word} (${w.meaning})`).join("\n")}
 Return a JSON object with one field, "lines": an array of ${args.lineCount.min} to ${args.lineCount.max} objects, alternating (or close to alternating) between the two roles, in the order they are said. Each object:
   - "role": "learner" or "partner".
   - "text": one short, natural ${target} sentence for that role to say, matching the learner's level (${args.learnerLevel} — keep it simple for "starting"/"basic", more natural for "intermediate"/"confident").
+  - "meaning": that same line translated into ${primary}, plainly and naturally — never leave this out, and never translate into any language other than ${primary}.
   - "wordIds": the IDs (from the list above) of the goal words THIS line actually uses (can be an empty array if the line uses none).
 
 At least one line must have role "learner" and at least one must have role "partner". Do not add any other fields.`;
@@ -502,6 +504,7 @@ async function generateScriptHandler(ctx: ActionCtx, args: { bookingId: Id<"room
   const lines = validated.lines.map((l) => ({
     role: l.role,
     text: l.text,
+    meaning: l.meaning,
     words: l.wordIds.map((id) => wordById.get(id)!.word),
   }));
 
@@ -675,14 +678,20 @@ export const markBookingConfirmed = internalMutation({
     if (booking === null || booking.status !== "matched") return null;
     await ctx.db.patch("roomBookings", id, { status: "confirmed", paymentId: args.paymentId, updatedAt: Date.now() });
 
+    const now = Date.now();
     if (booking.scheduledStartAt !== undefined) {
       const remindAt = booking.scheduledStartAt - REMINDER_BEFORE_START_MS;
-      if (remindAt > Date.now()) await ctx.scheduler.runAt(remindAt, internal.rooms.sendReminder, { bookingId: id });
-      await ctx.scheduler.runAt(booking.scheduledStartAt + NO_SHOW_CHECK_AFTER_START_MS, internal.rooms.checkNoShow, { bookingId: id });
+      if (remindAt > now) await ctx.scheduler.runAt(remindAt, internal.rooms.sendReminder, { bookingId: id });
+      // Floored at "now" so a payment that clears late (after start+grace already passed) still gives the
+      // learner the full grace window to join from confirmation, instead of firing checkNoShow immediately.
+      const noShowAt = Math.max(booking.scheduledStartAt + NO_SHOW_CHECK_AFTER_START_MS, now + NO_SHOW_CHECK_AFTER_START_MS);
+      await ctx.scheduler.runAt(noShowAt, internal.rooms.checkNoShow, { bookingId: id });
     }
     if (booking.scheduledEndAt !== undefined) {
       // Task B: auto-end the live room at start+minutes(+1min grace) even if nobody calls completeSession.
-      await ctx.scheduler.runAt(booking.scheduledEndAt + AUTO_END_GRACE_MS, internal.liveRoom.autoEndRoom, { bookingId: id });
+      // Same late-confirmation floor as the no-show check above.
+      const autoEndAt = Math.max(booking.scheduledEndAt + AUTO_END_GRACE_MS, now + AUTO_END_GRACE_MS);
+      await ctx.scheduler.runAt(autoEndAt, internal.liveRoom.autoEndRoom, { bookingId: id });
     }
     return null;
   },

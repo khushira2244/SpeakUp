@@ -16,13 +16,26 @@ function usd(cents: number): string {
   return `$${(cents / 100).toFixed(2)}`;
 }
 
-function dayLabel(startAt: number, lang: string): string {
-  return new Intl.DateTimeFormat(lang === "hi" ? "hi-IN" : "en-GB", { weekday: "short", day: "numeric", month: "short" }).format(new Date(startAt));
+function dayLabel(startAt: number, lang: string, todayLabel: string): string {
+  const d = new Date(startAt);
+  if (d.toDateString() === new Date().toDateString()) return todayLabel;
+  return new Intl.DateTimeFormat(lang === "hi" ? "hi-IN" : "en-GB", { weekday: "short", day: "numeric", month: "short" }).format(d);
 }
 
 function timeLabel(startAt: number, lang: string): string {
-  return new Intl.DateTimeFormat(lang === "hi" ? "hi-IN" : "en-GB", { hour: "numeric", minute: "2-digit" }).format(new Date(startAt));
+  return new Intl.DateTimeFormat(lang === "hi" ? "hi-IN" : "en-GB", { hour: "numeric", minute: "2-digit", hour12: true }).format(new Date(startAt));
 }
+
+type Period = "morning" | "afternoon" | "evening";
+const PERIODS: readonly Period[] = ["morning", "afternoon", "evening"];
+
+function periodOf(startAt: number): Period {
+  const h = new Date(startAt).getHours();
+  return h < 12 ? "morning" : h < 17 ? "afternoon" : "evening";
+}
+
+/** How many free slots to show per time-of-day period before "Show all available times". */
+const COLLAPSED_PER_PERIOD = 4;
 
 export function WhenStep({
   targetLanguage,
@@ -44,6 +57,7 @@ export function WhenStep({
   const { t, lang } = useI18n();
   const [mode, setMode] = useState<"now" | "later">("now");
   const [selected, setSelected] = useState<Slot | null>(null);
+  const [expandedDays, setExpandedDays] = useState<Set<string>>(new Set());
 
   const pricing = useQuery(api.rooms.roomPricing, {});
   const slots = useQuery(api.rooms.slotAvailability, mode === "later" ? { targetLanguage, minutes, level } : "skip");
@@ -108,36 +122,80 @@ export function WhenStep({
             ) : byDay.length === 0 ? (
               <p className="mt-3 text-base text-muted">{t("room.book.when.noSlots")}</p>
             ) : (
-              <div className="mt-3 flex flex-col gap-4">
-                {byDay.map(([key, daySlots]) => (
-                  <div key={key}>
-                    <p className="text-base font-semibold text-muted">{dayLabel(daySlots[0]!.startAt, lang)}</p>
-                    <div className="mt-2 flex flex-wrap gap-2">
-                      {daySlots.map((s) => {
-                        const checked = selected !== null && selected.startAt === s.startAt && selected.partnerProfileId === s.partnerProfileId;
-                        return (
-                          <button
-                            key={`${s.partnerProfileId}-${s.startAt}`}
-                            type="button"
-                            disabled={s.taken}
-                            onClick={() => setSelected(s)}
-                            className={cx(
-                              "flex min-h-11 flex-col items-center justify-center rounded-2xl border px-4 py-1.5 text-base font-semibold transition-colors",
-                              s.taken
-                                ? "cursor-not-allowed border-line bg-surface-2 text-muted opacity-60"
-                                : checked
-                                  ? "border-accent bg-accent/15 text-fg"
-                                  : "border-line bg-surface text-muted hover:border-line-strong",
-                            )}
-                          >
-                            {timeLabel(s.startAt, lang)}
-                            {s.taken ? <span className="text-[12px] font-normal">{t("room.book.when.taken")}</span> : null}
-                          </button>
-                        );
-                      })}
+              <div className="mt-3 flex flex-col gap-5">
+                {byDay.map(([key, daySlots]) => {
+                  const expanded = expandedDays.has(key);
+                  const byPeriod = new Map<Period, SlotWithTaken[]>();
+                  for (const s of daySlots) {
+                    const p = periodOf(s.startAt);
+                    const list = byPeriod.get(p) ?? [];
+                    list.push(s);
+                    byPeriod.set(p, list);
+                  }
+                  const hasMore = PERIODS.some((p) => (byPeriod.get(p) ?? []).filter((s) => !s.taken).length > COLLAPSED_PER_PERIOD);
+
+                  return (
+                    <div key={key}>
+                      <p className="text-base font-semibold text-muted">{dayLabel(daySlots[0]!.startAt, lang, t("room.book.when.today"))}</p>
+                      <div className="mt-2 flex flex-col gap-3">
+                        {PERIODS.map((period) => {
+                          const periodSlots = byPeriod.get(period) ?? [];
+                          if (periodSlots.length === 0) return null;
+                          const free = periodSlots.filter((s) => !s.taken);
+                          const shown = expanded ? periodSlots : free.slice(0, COLLAPSED_PER_PERIOD);
+                          if (shown.length === 0) return null;
+                          return (
+                            <div key={period}>
+                              <p className="text-[13px] font-semibold tracking-wide text-muted uppercase">
+                                {t(`room.book.when.${period}` as const)}
+                              </p>
+                              <div className="mt-1.5 flex flex-wrap gap-2">
+                                {shown.map((s) => {
+                                  const checked = selected !== null && selected.startAt === s.startAt && selected.partnerProfileId === s.partnerProfileId;
+                                  return (
+                                    <button
+                                      key={`${s.partnerProfileId}-${s.startAt}`}
+                                      type="button"
+                                      disabled={s.taken}
+                                      onClick={() => setSelected(s)}
+                                      className={cx(
+                                        "flex min-h-11 flex-col items-center justify-center rounded-2xl border px-4 py-1.5 text-base font-semibold transition-colors",
+                                        s.taken
+                                          ? "cursor-not-allowed border-line bg-surface-2 text-muted opacity-60"
+                                          : checked
+                                            ? "border-accent bg-accent/15 text-fg"
+                                            : "border-line bg-surface text-muted hover:border-line-strong",
+                                      )}
+                                    >
+                                      {timeLabel(s.startAt, lang)}
+                                      {s.taken ? <span className="text-[12px] font-normal">{t("room.book.when.taken")}</span> : null}
+                                    </button>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                      {hasMore || expanded ? (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setExpandedDays((prev) => {
+                              const next = new Set(prev);
+                              if (next.has(key)) next.delete(key);
+                              else next.add(key);
+                              return next;
+                            })
+                          }
+                          className="mt-2 text-base font-semibold text-accent"
+                        >
+                          {expanded ? t("room.book.when.showFewer") : t("room.book.when.showAll")}
+                        </button>
+                      ) : null}
                     </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             )}
           </div>

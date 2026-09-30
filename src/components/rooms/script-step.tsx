@@ -7,7 +7,7 @@ import type { Id } from "@convex/_generated/dataModel";
 import { useI18n } from "@/i18n/provider";
 import { BackButton, BrandHeader, PrimaryButton, Screen, cx } from "@/components/ui";
 
-export type ScriptLine = { role: "learner" | "partner"; text: string; words: string[] };
+export type ScriptLine = { role: "learner" | "partner"; text: string; meaning?: string; words: string[] };
 
 function highlight(text: string, words: string[]): ReactNode {
   const real = words.filter((w) => w.trim().length > 0);
@@ -139,6 +139,7 @@ export function ScriptStep({
                       {t(l.role === "learner" ? "room.live.learnerRole" : "room.live.partnerRole")}
                     </p>
                     <p className="mt-0.5 text-base leading-snug break-words">{highlight(l.text, l.words)}</p>
+                    {l.meaning ? <p className="mt-1 text-[14px] break-words text-muted italic">({l.meaning})</p> : null}
                   </div>
                 </div>
               ))}

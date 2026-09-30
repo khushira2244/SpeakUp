@@ -78,6 +78,7 @@ const SCENARIOS: Scenario[] = [
         joining={false}
         joinError={null}
         onJoin={() => {}}
+        onBack={() => {}}
       />
     ),
   },

@@ -28,6 +28,7 @@ export function scriptLineBounds(minutes: RoomMinutes): { min: number; max: numb
 }
 
 const MAX_LINE_TEXT = 300;
+const MAX_MEANING_TEXT = 300;
 
 export function roomScriptJsonSchema(wordIds: readonly string[]): Record<string, unknown> {
   return {
@@ -40,9 +41,10 @@ export function roomScriptJsonSchema(wordIds: readonly string[]): Record<string,
           properties: {
             role: { type: "string", enum: ["learner", "partner"] },
             text: { type: "string" },
+            meaning: { type: "string" },
             wordIds: { type: "array", items: { type: "string", enum: [...wordIds] } },
           },
-          required: ["role", "text", "wordIds"],
+          required: ["role", "text", "meaning", "wordIds"],
           additionalProperties: false,
         },
       },
@@ -52,7 +54,7 @@ export function roomScriptJsonSchema(wordIds: readonly string[]): Record<string,
   };
 }
 
-export type ValidatedScriptLine = { role: "learner" | "partner"; text: string; wordIds: string[] };
+export type ValidatedScriptLine = { role: "learner" | "partner"; text: string; meaning: string; wordIds: string[] };
 export type ValidatedScript = { lines: ValidatedScriptLine[] };
 
 export function validateRoomScript(
@@ -67,12 +69,13 @@ export function validateRoomScript(
     const rawRole = obj.role;
     const role: "learner" | "partner" = rawRole === "learner" || rawRole === "partner" ? rawRole : fail(`${path}.role`, `expected "learner" or "partner"`);
     const text = asNonEmptyString(obj.text, `${path}.text`, MAX_LINE_TEXT);
+    const meaning = asNonEmptyString(obj.meaning, `${path}.meaning`, MAX_MEANING_TEXT);
     const wordIds = asArrayOf(obj.wordIds, `${path}.wordIds`, { min: 0, max: 20 }, (rawId, idPath) => {
       const id = asNonEmptyString(rawId, idPath, 20);
       if (!opts.wordIds.has(id)) fail(idPath, `"${id}" is not one of this goal's allowed word IDs`);
       return id;
     });
-    return { role, text, wordIds };
+    return { role, text, meaning, wordIds };
   });
 
   // At least one line per role — otherwise it is not a two-person conversation.

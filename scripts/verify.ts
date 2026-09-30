@@ -1125,15 +1125,19 @@ async function partA(): Promise<void> {
   const scriptWordIds = new Set(["w0", "w1", "w2"]);
   const goodScript = {
     lines: [
-      { role: "learner", text: "Hallo, ich möchte einen Termin.", wordIds: ["w0"] },
-      { role: "partner", text: "Klar, wann passt es Ihnen?", wordIds: [] },
-      { role: "learner", text: "Morgen um zehn Uhr, bitte.", wordIds: ["w1", "w2"] },
-      { role: "partner", text: "Gut, das ist notiert.", wordIds: [] },
+      { role: "learner", text: "Hallo, ich möchte einen Termin.", meaning: "Hello, I would like an appointment.", wordIds: ["w0"] },
+      { role: "partner", text: "Klar, wann passt es Ihnen?", meaning: "Sure, what time works for you?", wordIds: [] },
+      { role: "learner", text: "Morgen um zehn Uhr, bitte.", meaning: "Tomorrow at ten o'clock, please.", wordIds: ["w1", "w2"] },
+      { role: "partner", text: "Gut, das ist notiert.", meaning: "Good, that is noted.", wordIds: [] },
     ],
   };
   const scriptOpts = { wordIds: scriptWordIds, minutes: 5 as const }; // 4 lines fits the 5-minute bound (4..6)
   const parsedScript = validateRoomScript(goodScript, scriptOpts);
   check("well-formed script (>=1 learner line, >=1 partner line) accepted", parsedScript.lines.length === 4);
+  check("each line's meaning (translation) is carried through", parsedScript.lines[0]!.meaning === "Hello, I would like an appointment.");
+  rejects("a line missing \"meaning\" is rejected", () =>
+    validateRoomScript({ lines: [...goodScript.lines.slice(0, 3), { role: "partner", text: "x", wordIds: [] }] }, scriptOpts),
+  );
   check("scriptLineBounds scales with minutes (5:4-6, 10:6-10, 15:8-14)", scriptLineBounds(5).max === 6 && scriptLineBounds(10).max === 10 && scriptLineBounds(15).max === 14);
   rejects("a word ID outside the allowed set is rejected", () =>
     validateRoomScript({ lines: [...goodScript.lines.slice(0, 3), { role: "partner", text: "x", wordIds: ["not-an-id"] }] }, scriptOpts),
